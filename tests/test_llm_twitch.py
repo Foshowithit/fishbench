@@ -112,6 +112,94 @@ class OfflineDeniseTests(unittest.TestCase):
         self.assertNotEqual(r1.text, r2.text)  # she treats repeats differently
         self.assertIn("novelty", r2.meta)
 
+    # ------------------------------------------------------- no-repeat law
+
+    def test_no_verbatim_repeat_in_conversation_window(self):
+        """The observed bug: saying 'hello again' twice, same canned reply."""
+        window = self.rec.backend.HISTORY
+        said = [self.rec.say("hello again").text for _ in range(window * 2)]
+        for i, line in enumerate(said):
+            self.assertNotIn(line, said[max(0, i - window):i],
+                             f"verbatim repeat at turn {i}: {line!r}")
+        self.assertGreaterEqual(len(set(said)), window,
+                                f"pool too small: {set(said)}")
+
+    def test_repeat_scans_of_one_item_never_share_a_line(self):
+        """The observed bug: scanning the same tilapia twice, identical line."""
+        run = self.memory.begin_run()
+        lines = []
+        for _ in range(8):
+            ev = self.memory.record_scan("tilapia", True, run)
+            lines.append(self.rec.react_to_scan(ev).text)
+        self.assertEqual(len(lines), len(set(lines)), lines)
+
+    def test_repeat_scan_names_the_repetition_count(self):
+        """Vary by repetition count, not just by rotation."""
+        run = self.memory.begin_run()
+        self.memory.record_scan("tilapia", True, run)      # first sighting
+        second = self.memory.record_scan("tilapia", True, run)
+        second_line = self.rec.react_to_scan(second).text   # read before #3
+        third = self.memory.record_scan("tilapia", True, run)
+        third_line = self.rec.react_to_scan(third).text
+        self.assertIn("two", second_line.lower())
+        self.assertIn("three", third_line.lower())
+
+    def test_escalation_reply_varies_by_count_not_just_note(self):
+        run = self.memory.begin_run()
+        first = self.memory.record_scan(
+            "car battery", True, run, notes="taped a second fish to it")
+        l1 = self.rec.react_to_scan(first).text
+        again = self.memory.record_scan(
+            "car battery", True, run, notes="taped a second fish to it")
+        l2 = self.rec.react_to_scan(again).text
+        self.assertNotEqual(l1, l2)  # same note, still not verbatim
+        self.assertIn("writing that down", l2)
+
+    def test_stage_tones_are_distinguishable_in_offline_lines(self):
+        """Run 1 / 20 / 100 / 200 must sound like four different people
+        with the stage label stripped — offline lines only."""
+        lines: dict[int, str] = {}
+        for run in (1, 20, 100, 200):
+            with tempfile.TemporaryDirectory(prefix="fishbench-tone-") as d:
+                mem = MemoryStore(d)
+                for _ in range(run):
+                    mem.begin_run()
+                rec = Receptionist(mem, LLMConfig(backend="offline"))
+                lines[run] = rec.say("hello").text
+        self.assertEqual(len(set(lines.values())), 4, lines)
+
+    def test_stage_escalation_tones_on_the_page(self):
+        """Spot-check the actual tone of each headline stage, not just that
+        the lines differ from each other."""
+        def line_at(run: int) -> str:
+            with tempfile.TemporaryDirectory(prefix="fishbench-tone-") as d:
+                mem = MemoryStore(d)
+                for _ in range(run):
+                    mem.begin_run()
+                rec = Receptionist(mem, LLMConfig(backend="offline"))
+                return rec.say("hello").text
+
+        # run 1: still doing customer service
+        self.assertIn("member card", line_at(1))
+        # run 20: pre-empts — she already knows why you're here
+        self.assertIn("don't want to know", line_at(20))
+        # run 100: complicit — asking what's getting scanned
+        self.assertIn("What are we scanning", line_at(100))
+        # run 200: final boss — the fish was kept
+        self.assertEqual(line_at(200), THE_LINE_BOSS)
+
+    def test_answers_depend_on_what_the_member_said(self):
+        """Same stage, same session: an apology, a hypothetical lobster, a
+        beep question and a bare greeting are four different replies."""
+        self.memory.begin_run()
+        replies = {
+            self.rec.say("I'm sorry. ").text,
+            self.rec.say("What if I scanned a lobster?").text,
+            self.rec.say("what if it beeps").text,
+            self.rec.say("hello").text,
+        }
+        self.assertEqual(len(replies), 4, replies)
+
 
 class TwitchTests(unittest.TestCase):
     def test_vote_and_resolve(self):

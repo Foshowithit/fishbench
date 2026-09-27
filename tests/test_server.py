@@ -288,6 +288,15 @@ class GameSessionUnitTests(unittest.TestCase):
         self.assertTrue(yours)
         self.assertLessEqual(len(yours[-1]["text"]), MAX_MSG)
 
+    def test_offline_hello_never_echoes_the_run_greeting(self):
+        """The greeting bypasses the backend, so it has to be seeded into
+        offline Denise's no-repeat window — otherwise saying 'hello' right
+        after walking in gets you the greeting twice, verbatim."""
+        greeting = self.s.start_run()["line"]
+        for _ in range(6):
+            reply = self.s.say("hello")
+            self.assertNotEqual(reply["line"], greeting)
+
     def test_scan_caps_item_and_notes(self):
         r = self.s.scan({"item": "y" * 500, "notes": "n" * 5000})
         self.assertLessEqual(len(r["event"]["item"]), 200)

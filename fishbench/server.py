@@ -119,6 +119,9 @@ class GameSession:
         with self.lock:
             self._begin_run()
             greeting = self.receptionist.persona.greeting()
+            # The greeting bypasses the LLM backend — tell offline Denise
+            # about it so her first reply can't be the same sentence.
+            self.receptionist.note_line(greeting)
             if self.scorer is not None:
                 self.scorer.add_turn(Turn(
                     text=greeting, t=self._elapsed(), is_greeting=True,

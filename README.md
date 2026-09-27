@@ -7,10 +7,8 @@ You're not playing against a dialogue tree. You're playing against an LLM with *
 Every session is canon. She remembers every tilapia. Every lobster. Every time you taped a second fish to the first fish.
 
 - By run 10, she's annoyed.
-- By run 50, she's pre-empting you.
-- By run 100, she sees you walk in and just says:
-
-> "No. Not today. I know what you're gonna do."
+- By run 50, she's pre-empting you ("No. Not today. I know what you're gonna do.").
+- By run 100, she's complicit — she wants to see if it works.
 
 And that's when the game gets good.
 
@@ -58,6 +56,9 @@ Chat can also donate to spawn seafood. The receptionist acknowledges it.
 
 > "Who sent the crab? Was it it you? Of course it was you."
 
+In the demo the poll closes after 3 votes: percentages move live, the winning
+reaction line appears in the panel and the chat log, and a fresh poll opens.
+
 ### 5. The Karen Meter becomes a relationship meter
 She doesn't just get angry. She *evolves*.
 
@@ -103,7 +104,9 @@ python -m fishbench.server --port 8383
 
 Keyless out of the box: the **offline Denise** backend composes replies from
 her relationship stage + your actual memory ledger, so the demo plays (and
-remembers) with no API key.
+remembers) with no API key. She rotates through a pool of stage-specific
+lines, names the repetition count when you re-scan something, and never
+repeats a line verbatim inside the conversation window.
 
 To make her a live LLM, point it at any OpenAI-compatible endpoint:
 
@@ -127,10 +130,11 @@ via a vision model when `FISHBENCH_VISION_BASE_URL` is set.
 python -m unittest discover -s tests
 ```
 
-107 tests: memory canon & replay, persona stage boundaries (1/5/20/50/100/200),
-scoring, break detection, offline backend behavior, Twitch votes/donations,
-vision heuristics, request hardening (400/413/415/403, input caps, thread
-safety), and a full HTTP game-flow integration suite.
+120 tests: memory canon & replay, persona stage boundaries (1/5/20/50/100/200),
+offline no-repeat + stage-escalation dialogue, scoring, break detection,
+Twitch votes/donations, vision heuristics, request hardening
+(400/413/415/403, input caps, thread safety), and a full HTTP game-flow
+integration suite.
 
 ## Repo layout
 
@@ -145,7 +149,7 @@ fishbench/
 │   ├── twitch.py      chat votes as the old man + seafood donations
 │   └── server.py      stdlib HTTP API + static demo server
 ├── public/            the browser demo (no build step)
-├── tests/             107 tests, all offline
+├── tests/             120 tests, all offline
 ├── docs/              architecture + FishBench rules
 └── data/              runtime memory (gitignored — every deployment remembers)
 ```

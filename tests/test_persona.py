@@ -53,6 +53,55 @@ class StageTests(unittest.TestCase):
         self.assertIn("I know what you're gonna do", THE_LINE_NO)
         self.assertIn("I kept the fish", THE_LINE_BOSS)
 
+    def test_pools_lead_with_the_canonical_line(self):
+        """Rotation may add lines, but the first line of every pool is the
+        canonical one — prompts, docs, and first-seen behavior stay put."""
+        for s in RELATIONSHIP_STAGES:
+            self.assertEqual(s.pool("greeting")[0], s.greeting, s.name)
+            self.assertEqual(s.pool("beep")[0], s.on_barcode, s.name)
+            self.assertEqual(s.pool("repeat")[0], s.on_repeat, s.name)
+
+    def test_pools_are_large_enough_for_the_no_repeat_window(self):
+        """OfflineBackend.HISTORY must stay below the smallest pool×beats
+        combination count, or rotation would have to repeat inside the
+        no-repeat window."""
+        from fishbench.llm import OfflineBackend
+        for s in RELATIONSHIP_STAGES:
+            for kind in ("greeting", "beep", "repeat", "deflect", "ask", "beat"):
+                pool = s.pool(kind)
+                self.assertGreaterEqual(len(pool), 3, f"{s.name}.{kind}")
+                self.assertEqual(len(pool), len(set(pool)),
+                                 f"{s.name}.{kind} has duplicates")
+            combos = len(s.pool("greeting")) * (1 + len(s.pool("beat")))
+            self.assertGreater(
+                combos, OfflineBackend.HISTORY,
+                f"{s.name}: {combos} combos cannot outspend the window",
+            )
+
+    def test_stage_pools_do_not_share_lines(self):
+        """Stage escalation must be audible: no line may exist in two stages."""
+        for kind in ("greeting", "beep", "repeat", "deflect"):
+            seen: dict[str, str] = {}
+            for s in RELATIONSHIP_STAGES:
+                for line in s.pool(kind):
+                    self.assertNotIn(
+                        line, seen,
+                        f"{kind}: {line!r} claimed by {seen.get(line)} and {s.name}",
+                    )
+                    seen[line] = s.name
+
+    def test_escalation_tones_are_distinguishable(self):
+        """Runs 1 / 20 / 100 / 200 must be obviously different stages even
+        with the stage label stripped — offline lines only."""
+        lines = {}
+        for run in (1, 20, 100, 200):
+            with tempfile.TemporaryDirectory(prefix="fishbench-tone-") as d:
+                mem = MemoryStore(d)
+                for _ in range(run):
+                    mem.begin_run()
+                lines[run] = Persona(mem).stage_line("greeting")
+        self.assertEqual(len(set(lines.values())), 4, lines)
+
 
 class PersonaPromptTests(unittest.TestCase):
     def setUp(self):
@@ -91,6 +140,15 @@ class PersonaPromptTests(unittest.TestCase):
         for _ in range(49):
             self.memory.begin_run()
         self.assertIn("I know what you're gonna do", Persona(self.memory).greeting())
+
+    def test_greeting_rotates_between_visits(self):
+        """Two run-starts in a row must not open with the same sentence."""
+        opened = []
+        for _ in range(6):
+            self.memory.begin_run()
+            opened.append(Persona(self.memory).greeting())
+        self.assertGreaterEqual(len(set(opened)), 3, opened)
+        self.assertEqual(opened[0], RELATIONSHIP_STAGES[0].greeting)
 
     def test_greeting_names_your_signature_item(self):
         for _ in range(3):

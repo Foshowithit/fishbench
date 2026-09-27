@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>That's a Fish Barcode — She remembers the fish.</title>
+<link rel="icon" href="data:," />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family:Libre+Franklin:ital,wght@0,400;0,600;0,800;1,400&family=Spline+Sans+Mono:wght@400;600&display=swap" rel="stylesheet" />
@@ -93,7 +94,9 @@
       <div class="twitch-head">
         <span class="dot"></span> CHAT IS THE OLD MAN
       </div>
+      <p class="poll-hint" id="pollHint">chat votes — the poll closes at 3.</p>
       <div class="poll" id="poll"></div>
+      <p class="poll-result" id="pollResult" hidden></p>
       <div class="donate-row">
         <select id="donateItem">
           <option value="crab">crab</option>
@@ -113,7 +116,9 @@
 <!-- ─── FishBench strip ──────────────────────────────────── -->
 <footer class="bench">
   <div class="bench-scores" id="benchScores">
-    <div class="bs"><label>STRAIGHT FACE</label><b id="mStraight">0.0s</b></div>
+    <div class="bs" title="turns without breaking character">
+      <label>STRAIGHT FACE · TURNS UNBROKEN</label><b id="mStraight">—</b>
+    </div>
     <div class="bs"><label>FASTEST "SIR. LOOK."</label><b id="mSir">—</b></div>
     <div class="bs"><label>BEST THREAT</label><b id="mThreat" class="threat">—</b></div>
     <div class="bs"><label>CHARACTER BREAKS</label><b id="mBreaks">0</b></div>

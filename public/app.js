@@ -1,5 +1,5 @@
 /* FishBench demo client.
-   Talks to the stdlib API in fishbench/server.js — no build step, no deps. */
+   Talks to the stdlib API in fishbench/server.py — no build step, no deps. */
 
 const $ = (id) => document.getElementById(id);
 const transcript = $("transcript");
@@ -125,8 +125,8 @@ async function say(text) {
     const r = await api("/api/say", { message: text });
     await deniseSay(r.line);
     if (r.broke_character) {
-      sys("⚠ CHARACTER BREAK — she answered like a assistant.");
-      markBreak(r.line);
+      sys("⚠ CHARACTER BREAK — she answered like an assistant.");
+      markBreak();
     }
     renderState(await api("/api/state"));
   } catch (e) {
@@ -134,7 +134,7 @@ async function say(text) {
   }
 }
 
-function markBreak(lineText) {
+function markBreak() {
   const ps = transcript.querySelectorAll(".t-denise");
   const last = ps[ps.length - 1];
   if (last) last.classList.add("t-break");
@@ -264,27 +264,83 @@ $("camBtn").addEventListener("click", async () => {
 });
 
 /* ─── twitch ────────────────────────────────────────────── */
+const CLOSE_AT = 3;            // votes before the old man's poll resolves
+let myVote = null;
+
+function setHint(text) { $("pollHint").textContent = text; }
+
+function renderPoll(poll) {
+  const el = $("poll");
+  el.textContent = "";
+  for (const opt of poll.options) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "vote" + (opt.id === myVote ? " mine" : "");
+    b.setAttribute("aria-pressed", opt.id === myVote ? "true" : "false");
+    const fill = document.createElement("span");
+    fill.className = "fill";
+    fill.style.width = `${opt.pct}%`;
+    const label = document.createElement("span");
+    label.textContent = `${opt.line} — ${opt.pct}%`;
+    b.append(fill, label);
+    b.addEventListener("click", () => castVote(opt.id));
+    el.appendChild(b);
+  }
+}
+
+async function castVote(option) {
+  const b = $("poll").querySelectorAll(".vote");
+  b.forEach((x) => { x.disabled = true; });
+  try {
+    const r = await api("/api/twitch/vote", { option });
+    myVote = option;
+    renderPoll(r.poll);
+    const total = r.poll.options.reduce((a, o) => a + (o.votes || 0), 0);
+    if (total >= CLOSE_AT) {
+      await resolvePoll();
+    } else {
+      setHint(`your vote counts — ${total} of ${CLOSE_AT} to close the poll.`);
+    }
+  } catch (e) {
+    setHint(`vote failed: ${e.message}`);
+  } finally {
+    b.forEach((x) => { x.disabled = false; });
+  }
+}
+
+async function resolvePoll() {
+  try {
+    const r = await api("/api/twitch/resolve", {});
+    const box = $("pollResult");
+    const line = r.line || "nobody voted. the old man stands there anyway.";
+    box.textContent = `THE OLD MAN RESOLVES: ${line}`;
+    box.hidden = false;
+    myVote = null;
+    setHint("poll closed — the old man has spoken. new poll is open.");
+    await loadTwitch();          // server already reset the tally
+    const entry = document.createElement("div");   // after loadTwitch: it clears the log
+    entry.className = "verdict";
+    entry.textContent = line;
+    $("chatLog").appendChild(entry);
+    $("chatLog").scrollTop = $("chatLog").scrollHeight;
+  } catch (e) {
+    setHint(`resolve failed: ${e.message}`);
+  }
+}
+
 async function loadTwitch() {
   try {
     const t = await api("/api/twitch");
-    const poll = $("poll");
-    poll.innerHTML = "";
-    for (const opt of t.poll.options) {
-      const b = document.createElement("button");
-      b.className = "vote";
-      b.innerHTML = `<div class="fill" style="width:${opt.pct}%"></div><span>${opt.line} — ${opt.pct}%</span>`;
-      b.onclick = async () => {
-        await api("/api/twitch/vote", { option: opt.id });
-        loadTwitch();
-      };
-      poll.appendChild(b);
-    }
+    renderPoll(t.poll);
     const log = $("chatLog");
-    log.innerHTML = "";
+    log.textContent = "";
     for (const d of t.recent_donations.slice(-6)) {
       const p = document.createElement("div");
-      // from_user/item are chat-supplied — escape before innerHTML (XSS).
-      p.innerHTML = `<b>${esc(d.from_user)}</b> spawned a <b>${esc(d.item)}</b>`;
+      const who = document.createElement("b");
+      who.textContent = d.from_user;          // chat-supplied — textContent only
+      const what = document.createElement("b");
+      what.textContent = d.item;
+      p.append(who, " spawned a ", what);
       log.appendChild(p);
     }
     log.scrollTop = log.scrollHeight;
@@ -310,7 +366,13 @@ async function refreshScore() {
   try {
     const s = await api("/api/fishbench/score");
     if (s.error) return;
-    $("mStraight").textContent = `${s.straight_face_seconds}s`;
+    // Straight face is about NOT breaking: how many of her turns in this run
+    // have gone out unbroken. (The seconds-to-first-break metric still backs
+    // the leaderboard's "longest straight face" category.)
+    const unbroken = Math.max(0, (s.turns || 0) - (s.character_breaks || 0));
+    $("mStraight").textContent = s.turns ? `${unbroken}` : "—";
+    $("mStraight").parentElement.title =
+      `${unbroken} of ${s.turns} turns without a character break`;
     $("mSir").textContent = s.first_sir_look_s == null ? "—" : `${s.first_sir_look_s}s`;
     $("mThreat").textContent = s.best_threat ? `"${s.best_threat}"` : "—";
     $("mBreaks").textContent = s.character_breaks;

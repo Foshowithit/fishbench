@@ -171,6 +171,10 @@ html, body {
 }
 button:active, .file-btn:active { transform: translate(3px,3px); box-shadow: 0 0 0 var(--ink); }
 button:hover, .file-btn:hover { background: #ffe14d; }
+button:focus-visible, .file-btn:focus-visible, a:focus-visible {
+  outline: 3px solid var(--red); outline-offset: 2px;
+}
+input:focus-visible, select:focus-visible { outline: 3px solid var(--yellow); }
 
 .quick-replies { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .quick-replies button {
@@ -254,7 +258,12 @@ button:hover, .file-btn:hover { background: #ffe14d; }
   width: 9px; height: 9px; border-radius: 50%; background: #ff4444;
   animation: blink 1.4s steps(1) infinite;
 }
-.poll { padding: 10px 12px 4px; display: grid; gap: 7px; }
+.poll-hint {
+  margin: 0; padding: 8px 12px 0;
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--grey);
+}
+.poll { padding: 8px 12px 4px; display: grid; gap: 7px; }
 .vote {
   position: relative; text-align: left;
   font-family: var(--font-mono); font-size: 12px; font-weight: 600;
@@ -266,7 +275,27 @@ button:hover, .file-btn:hover { background: #ffe14d; }
   position: absolute; left: 0; top: 0; bottom: 0;
   background: rgba(123,63,242,.22); transition: width .4s ease;
 }
-.vote span { position: relative; z-index: 1; }
+/* block so the label's padding actually constrains wrapping (inline padding
+   does not affect line breaks — the YOUR VOTE badge would sit on the text) */
+.vote span { display: block; position: relative; z-index: 1; }
+.vote:hover { background: var(--fluo); }
+.vote:hover .fill { background: rgba(123,63,242,.35); }
+.vote.mine { border-color: var(--yellow); box-shadow: inset 0 0 0 2px var(--yellow); }
+.vote.mine span { padding-right: 84px; }
+.vote.mine::after {
+  content: "YOUR VOTE"; position: absolute; right: 6px; top: 5px; z-index: 2;
+  font-size: 9px; letter-spacing: .14em; color: var(--ink);
+  background: var(--yellow); border: 2px solid var(--ink); padding: 1px 5px;
+}
+.vote:disabled { cursor: wait; opacity: .8; }
+.poll-result {
+  margin: 4px 12px 10px; padding: 9px 11px;
+  background: var(--yellow); border: 3px solid var(--ink);
+  box-shadow: 3px 3px 0 var(--ink);
+  font-family: var(--font-mono); font-weight: 600; font-size: 12px;
+  line-height: 1.5;
+}
+.poll-result[hidden] { display: none; }
 .donate-row { display: flex; gap: 8px; padding: 6px 12px 12px; }
 .donate-row select {
   flex: 1; font-family: var(--font-mono); font-size: 12px;
@@ -274,13 +303,21 @@ button:hover, .file-btn:hover { background: #ffe14d; }
 }
 .donate-row button { font-size: 11px; padding: 9px 10px; background: var(--yellow); }
 .chat-log {
-  max-height: 118px; overflow-y: auto; padding: 9px 12px;
+  min-height: 42px; max-height: 118px; overflow-y: auto; padding: 9px 12px;
   border-top: 3px solid var(--ink);
   font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
   background: var(--desk);
 }
+.chat-log:empty::before {
+  content: "chat is quiet. spawn something."; font-style: italic; color: var(--grey);
+}
 .chat-log b { color: #7b3ff2; }
 .chat-log .ack { color: #a33; font-weight: 600; }
+.chat-log .verdict {
+  margin-top: 4px; padding: 4px 6px;
+  background: var(--yellow); border: 2px solid var(--ink);
+  font-weight: 600; color: var(--ink);
+}
 
 /* ─── FishBench footer ───────────────────────────────────── */
 .bench {
@@ -318,6 +355,9 @@ button:hover, .file-btn:hover { background: #ffe14d; }
   position: fixed; inset: 0; z-index: 100;
   background: rgba(23,21,15,.72); display: grid; place-items: center; padding: 20px;
 }
+/* `hidden` must win over the display:grid above — otherwise the empty
+   911 card shows on every page load as a blank cream bar with an ×. */
+.modal[hidden] { display: none; }
 .modal-card {
   background: var(--paper); border: 4px solid var(--ink);
   box-shadow: 8px 8px 0 var(--red);
