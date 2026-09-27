@@ -1,0 +1,340 @@
+/* ─── THAT'S A FISH BARCODE ──────────────────────────────────
+   Aesthetic: the front desk of an LA Fitness at 9:47pm.
+   Fluorescent off-white, safety-yellow membership accents,
+   receipt-printer mono, badge-holder geometry. Tired, specific.
+   ──────────────────────────────────────────────────────────── */
+
+:root {
+  --ink:        #17150f;
+  --desk:       #ded8c8;   /* worn laminate */
+  --desk-dark:  #c9c2ae;
+  --paper:      #f6f2e6;   /* badge card white */
+  --fluo:       #fbfaf3;   /* fluorescent white */
+  --yellow:     #ffd400;   /* LA Fitness-ish safety yellow */
+  --yellow-dim: #d9b600;
+  --red:        #d63b21;   /* scanner laser / 911 */
+  --green:      #1f9d55;   /* lamp OK */
+  --grey:       #6d675a;
+  --line:       #17150f;
+  --shadow:     4px 4px 0 var(--ink);
+  --font-disp:  "Archivo Black", "Arial Black", sans-serif;
+  --font-body:  "Libre Franklin", "Helvetica Neue", sans-serif;
+  --font-mono:  "Spline Sans Mono", "Courier New", monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--desk);
+  color: var(--ink);
+  font-family: var(--font-body);
+  min-height: 100%;
+}
+
+/* paper grain over everything */
+.grain {
+  position: fixed; inset: 0; pointer-events: none; z-index: 90; opacity: .5;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(23,21,15,.028) 0 1px, transparent 1px 3px),
+    radial-gradient(circle at 20% 10%, rgba(255,212,0,.10), transparent 45%),
+    radial-gradient(circle at 85% 80%, rgba(23,21,15,.06), transparent 55%);
+}
+
+/* ─── scrolling marquee — membership-card energy ─────────── */
+.marquee-bar {
+  background: var(--yellow);
+  border-bottom: 3px solid var(--ink);
+  overflow: hidden; white-space: nowrap;
+  font-family: var(--font-mono); font-weight: 600;
+  font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+  padding: 7px 0;
+}
+.marquee-inner { display: inline-flex; animation: slide 26s linear infinite; }
+.marquee-inner span { padding-right: 2em; }
+@keyframes slide { to { transform: translateX(-50%); } }
+
+/* ─── layout ─────────────────────────────────────────────── */
+.desk {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 22px;
+  padding: 26px clamp(16px, 4vw, 56px) 10px;
+  max-width: 1280px; margin: 0 auto;
+}
+@media (max-width: 940px) { .desk { grid-template-columns: 1fr; } }
+
+.panel {
+  background: var(--fluo);
+  border: 3px solid var(--ink);
+  box-shadow: var(--shadow);
+  padding: 18px;
+  position: relative;
+}
+
+/* ─── Denise: the ID plate ───────────────────────────────── */
+.id-plate {
+  display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  border-bottom: 3px dashed var(--ink);
+  padding-bottom: 14px; margin-bottom: 14px;
+}
+.photo {
+  width: 84px; height: 104px; flex: none;
+  background: linear-gradient(160deg, var(--yellow) 0%, var(--yellow-dim) 100%);
+  border: 3px solid var(--ink);
+  position: relative; overflow: hidden;
+  display: grid; place-items: center;
+}
+.lanyard {
+  position: absolute; top: -30px; left: 50%; transform: translateX(-50%);
+  width: 12px; height: 46px; background: var(--red); border: 2px solid var(--ink);
+}
+.face { font-size: 44px; filter: grayscale(.25); transform: translateY(6px); }
+.id-text { flex: 1 1 200px; min-width: 0; }
+.name {
+  font-family: var(--font-disp); font-size: clamp(30px, 4.4vw, 46px);
+  margin: 0; letter-spacing: .02em; line-height: .95;
+}
+.role {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .18em;
+  text-transform: uppercase; color: var(--grey); margin: 6px 0 8px;
+}
+.stage-badge {
+  display: inline-block; margin: 0;
+  background: var(--ink); color: var(--yellow);
+  font-family: var(--font-mono); font-weight: 600; font-size: 12px;
+  letter-spacing: .1em; text-transform: uppercase;
+  padding: 5px 10px;
+}
+
+/* relationship meter (the Karen Meter, rebranded) */
+.meter { flex: 1 1 190px; min-width: 170px; }
+.meter-label, .meter-caption {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--grey);
+}
+.meter-track {
+  height: 22px; background: var(--desk-dark);
+  border: 3px solid var(--ink); margin: 5px 0 4px; overflow: hidden;
+}
+.meter-fill {
+  height: 100%; width: 2%;
+  background: repeating-linear-gradient(-45deg,
+    var(--yellow) 0 10px, var(--ink) 10px 13px);
+  transition: width .7s cubic-bezier(.2,.9,.2,1);
+}
+
+/* ─── transcript ─────────────────────────────────────────── */
+.transcript {
+  height: min(46vh, 430px); min-height: 260px;
+  overflow-y: auto;
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  padding: 14px;
+  font-family: var(--font-mono); font-size: 14px; line-height: 1.55;
+  scrollbar-width: thin;
+}
+.transcript p { margin: 0 0 10px; }
+.boot-line { color: var(--grey); font-style: italic; }
+.t-you  { color: var(--grey); }
+.t-you::before  { content: "YOU › "; font-weight: 600; color: var(--ink); }
+.t-denise { font-weight: 600; }
+.t-denise::before { content: "DENISE › "; color: #a33; }
+.t-sys  { color: var(--grey); font-size: 12px; }
+.t-sys::before { content: "※ "; }
+.t-911::before { content: "911 › "; color: var(--red); font-weight: 600; }
+.t-think { opacity: 0; animation: appear .4s ease forwards; }
+@keyframes appear { to { opacity: 1; } }
+.t-denise.t-break {
+  outline: 3px solid var(--red); outline-offset: 3px;
+  background: #ffe9e4;
+}
+.typing::after { content: "▌"; animation: blink .7s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ─── talk bar ───────────────────────────────────────────── */
+.talk { display: flex; gap: 8px; margin-top: 12px; }
+.talk input {
+  flex: 1; min-width: 0;
+  font-family: var(--font-mono); font-size: 14px;
+  padding: 12px; border: 3px solid var(--ink); background: var(--fluo);
+}
+.talk input:focus { outline: 3px solid var(--yellow); outline-offset: 1px; }
+.talk button, .quick-replies button, .scan-controls button,
+.item-btn, .donate-row button, .bench-actions button, .file-btn {
+  font-family: var(--font-disp); font-size: 13px; letter-spacing: .06em;
+  background: var(--yellow); color: var(--ink);
+  border: 3px solid var(--ink); box-shadow: 3px 3px 0 var(--ink);
+  padding: 11px 16px; cursor: pointer; text-transform: uppercase;
+  transition: transform .06s ease, box-shadow .06s ease;
+}
+button:active, .file-btn:active { transform: translate(3px,3px); box-shadow: 0 0 0 var(--ink); }
+button:hover, .file-btn:hover { background: #ffe14d; }
+
+.quick-replies { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.quick-replies button {
+  font-family: var(--font-mono); font-weight: 600; font-size: 11px;
+  background: var(--paper); padding: 7px 11px; letter-spacing: .04em;
+}
+
+/* ─── scanner ────────────────────────────────────────────── */
+.scanner { border: 3px solid var(--ink); background: var(--ink); color: var(--paper); }
+.scanner-head {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--yellow); color: var(--ink);
+  padding: 8px 12px; border-bottom: 3px solid var(--ink);
+  font-family: var(--font-mono); font-weight: 600; font-size: 11px;
+  letter-spacing: .16em;
+}
+.lamp {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--green); border: 2px solid var(--ink);
+  box-shadow: 0 0 8px var(--green);
+}
+.lamp.busy { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); }
+.lamp.bad  { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+.beam-zone {
+  position: relative; height: 210px; overflow: hidden;
+  background:
+    repeating-linear-gradient(90deg, #201e17 0 14px, #17150f 14px 28px);
+  display: grid; place-items: center;
+}
+#cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: none; }
+#cam.on { display: block; }
+.beam {
+  position: absolute; left: 6%; right: 6%; height: 3px; top: 18%;
+  background: var(--red); box-shadow: 0 0 14px 3px rgba(214,59,33,.8);
+  animation: sweep 2.6s ease-in-out infinite alternate;
+}
+@keyframes sweep { to { top: 80%; } }
+.beam-hint {
+  position: relative; z-index: 2; text-align: center;
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.7;
+  color: #b7b09c; letter-spacing: .06em; padding: 0 12px;
+}
+.beam-hint em { color: var(--yellow); font-style: normal; font-weight: 600; }
+
+.scan-controls { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; background: #24211a; }
+.scan-controls button, .file-btn { font-size: 11px; padding: 9px 12px; box-shadow: 2px 2px 0 #000; }
+.cam-btn { background: var(--paper); }
+.decl-btn { background: var(--red); color: var(--paper); }
+
+.item-row { display: flex; gap: 0; padding: 0 12px 12px; background: #24211a; }
+.item-row input {
+  flex: 1; min-width: 0; padding: 11px; font-family: var(--font-mono);
+  font-size: 13px; border: 3px solid var(--ink); background: var(--fluo); color: var(--ink);
+}
+.item-btn { border-left: none; box-shadow: none; }
+
+.beep-toast {
+  position: absolute; left: 50%; top: 40%; transform: translate(-50%,-50%) scale(.4);
+  font-family: var(--font-disp); font-size: 84px; color: var(--yellow);
+  text-shadow: 5px 5px 0 var(--red), -2px -2px 0 var(--ink);
+  opacity: 0; pointer-events: none; z-index: 5;
+}
+.beep-toast.go { animation: beep .9s cubic-bezier(.2,1.4,.4,1) forwards; }
+@keyframes beep {
+  0% { opacity: 0; transform: translate(-50%,-50%) scale(.3) rotate(-8deg); }
+  30% { opacity: 1; transform: translate(-50%,-50%) scale(1.15) rotate(2deg); }
+  70% { opacity: 1; transform: translate(-50%,-50%) scale(1) rotate(0); }
+  100% { opacity: 0; transform: translate(-50%,-50%) scale(1.4); }
+}
+.scan-panel { position: relative; }
+
+/* ─── twitch panel ───────────────────────────────────────── */
+.twitch { margin-top: 16px; border: 3px solid var(--ink); background: var(--paper); }
+.twitch-head {
+  background: #7b3ff2; color: #fff; padding: 8px 12px;
+  font-family: var(--font-mono); font-weight: 600; font-size: 11px;
+  letter-spacing: .16em; display: flex; align-items: center; gap: 8px;
+}
+.twitch-head .dot {
+  width: 9px; height: 9px; border-radius: 50%; background: #ff4444;
+  animation: blink 1.4s steps(1) infinite;
+}
+.poll { padding: 10px 12px 4px; display: grid; gap: 7px; }
+.vote {
+  position: relative; text-align: left;
+  font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+  background: var(--fluo); border: 3px solid var(--ink);
+  padding: 9px 10px; cursor: pointer; overflow: hidden;
+  box-shadow: none;
+}
+.vote .fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: rgba(123,63,242,.22); transition: width .4s ease;
+}
+.vote span { position: relative; z-index: 1; }
+.donate-row { display: flex; gap: 8px; padding: 6px 12px 12px; }
+.donate-row select {
+  flex: 1; font-family: var(--font-mono); font-size: 12px;
+  border: 3px solid var(--ink); background: var(--fluo); padding: 8px;
+}
+.donate-row button { font-size: 11px; padding: 9px 10px; background: var(--yellow); }
+.chat-log {
+  max-height: 118px; overflow-y: auto; padding: 9px 12px;
+  border-top: 3px solid var(--ink);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
+  background: var(--desk);
+}
+.chat-log b { color: #7b3ff2; }
+.chat-log .ack { color: #a33; font-weight: 600; }
+
+/* ─── FishBench footer ───────────────────────────────────── */
+.bench {
+  max-width: 1280px; margin: 12px auto 40px;
+  padding: 0 clamp(16px, 4vw, 56px);
+}
+.bench-scores {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  border: 3px solid var(--ink); background: var(--ink); gap: 3px;
+  box-shadow: var(--shadow);
+}
+.bs { background: var(--paper); padding: 11px 13px; }
+.bs label {
+  display: block; font-family: var(--font-mono); font-size: 9.5px;
+  letter-spacing: .16em; color: var(--grey); text-transform: uppercase;
+}
+.bs b { font-family: var(--font-disp); font-size: 25px; display: block; margin-top: 4px; }
+.bs .threat { font-size: 14px; font-family: var(--font-mono); line-height: 1.35; }
+.bs.total { background: var(--yellow); }
+.bench-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 14px; }
+.bench-actions .red { background: var(--red); color: var(--paper); }
+.fineprint {
+  font-family: var(--font-mono); font-size: 11px; color: var(--grey);
+  margin-top: 14px; letter-spacing: .04em;
+}
+.fineprint a { color: var(--ink); }
+
+.lb { margin-top: 14px; border: 3px solid var(--ink); background: var(--paper); padding: 12px; }
+.lb table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; }
+.lb th, .lb td { text-align: left; padding: 6px 8px; border-bottom: 2px solid var(--desk-dark); }
+.lb th { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--grey); }
+
+/* ─── modal ──────────────────────────────────────────────── */
+.modal {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(23,21,15,.72); display: grid; place-items: center; padding: 20px;
+}
+.modal-card {
+  background: var(--paper); border: 4px solid var(--ink);
+  box-shadow: 8px 8px 0 var(--red);
+  max-width: 640px; width: 100%; max-height: 82vh; overflow-y: auto;
+  padding: 22px; position: relative;
+}
+.modal-card h2 { font-family: var(--font-disp); margin: 0 0 12px; }
+.modal-card pre {
+  background: var(--ink); color: var(--yellow); padding: 12px;
+  font-family: var(--font-mono); font-size: 11.5px; white-space: pre-wrap;
+  max-height: 55vh; overflow: auto;
+}
+.modal-x {
+  position: absolute; top: 8px; right: 10px;
+  background: none; border: none; font-size: 30px; cursor: pointer;
+  box-shadow: none; padding: 2px 8px;
+}
+
+/* remove default button chrome from anchor-ish elements we styled */
+.file-btn { display: inline-block; }

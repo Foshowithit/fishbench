@@ -1,0 +1,25 @@
+# runtime memory — every deployment has its own canon
+data/
+*.jsonl
+
+# secrets — env files never enter the repo
+.env
+.env.local
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# test/coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/
+*.swp

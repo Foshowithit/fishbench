@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>That's a Fish Barcode — She remembers the fish.</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family:Libre+Franklin:ital,wght@0,400;0,600;0,800;1,400&family=Spline+Sans+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+
+<header class="marquee-bar">
+  <div class="marquee-inner">
+    <span>MEMBER SINCE 2019 · SCANNER BEEPS ANYWAY · SHE REMEMBERS · EVERY SESSION IS CANON · FISHBENCH v0.1 ·&nbsp;</span>
+    <span>MEMBER SINCE 2019 · SCANNER BEEPS ANYWAY · SHE REMEMBERS · EVERY SESSION IS CANON · FISHBENCH v0.1 ·&nbsp;</span>
+  </div>
+</header>
+
+<main class="desk">
+
+  <!-- ─── left: the front desk ─────────────────────────────── -->
+  <section class="panel denise-panel" aria-label="The receptionist">
+    <div class="id-plate">
+      <div class="photo">
+        <div class="lanyard"></div>
+        <span class="face" aria-hidden="true">😐</span>
+      </div>
+      <div class="id-text">
+        <h1 class="name">DENISE</h1>
+        <p class="role">FRONT DESK · LA FITNESS · SINCE 2019</p>
+        <p class="stage-badge"><span id="stageName">Polite Confusion</span> · RUN <span id="runNo">1</span></p>
+      </div>
+      <div class="meter" title="The Karen Meter">
+        <div class="meter-label">RELATIONSHIP</div>
+        <div class="meter-track"><div class="meter-fill" id="meterFill"></div></div>
+        <div class="meter-caption" id="meterCaption">she's trying her best</div>
+      </div>
+    </div>
+
+    <div class="transcript" id="transcript" aria-live="polite">
+      <p class="boot-line">// walk up to the desk…</p>
+    </div>
+
+    <form class="talk" id="talkForm" autocomplete="off">
+      <input id="talkInput" type="text" placeholder='say something to Denise… ("again", "sorry", "what if it beeps")' maxlength="240" />
+      <button type="submit">SAY IT</button>
+    </form>
+
+    <div class="quick-replies" id="quickReplies">
+      <button data-say="Do you remember me?">Do you remember me?</button>
+      <button data-say="What if I scanned a lobster?">lobster scenario</button>
+      <button data-say="I'm sorry.">I'm sorry</button>
+      <button data-say="Again.">do it again</button>
+    </div>
+  </section>
+
+  <!-- ─── right: the scanner ───────────────────────────────── -->
+  <section class="panel scan-panel" aria-label="The scanner">
+    <div class="scanner">
+      <div class="scanner-head">
+        <span class="lamp" id="lamp"></span>
+        <span class="scanner-title">MEMBER SCAN · MODEL FB-2019</span>
+      </div>
+
+      <div class="beam-zone" id="beamZone">
+        <video id="cam" playsinline muted></video>
+        <div class="beam" id="beam"></div>
+        <div class="beam-hint" id="beamHint">point at anything.<br/>if it <em>could</em> have a barcode, it beeps.</div>
+      </div>
+
+      <div class="scan-controls">
+        <label class="file-btn">
+          SCAN A FILE
+          <input type="file" id="fileInput" accept="image/*" hidden />
+        </label>
+        <button class="cam-btn" id="camBtn">USE CAMERA</button>
+        <button class="decl-btn" id="declBtn">NO IMAGE? LIE INSTEAD</button>
+      </div>
+
+      <div class="item-row">
+        <input id="itemName" type="text" placeholder='or name the thing: "tilapia", "car battery", "my forehead"' maxlength="80" />
+        <button id="itemBtn" class="item-btn">SCAN</button>
+      </div>
+
+      <div class="beep-toast" id="beepToast" aria-hidden="true">BEEP</div>
+    </div>
+
+    <!-- Twitch: chat is the old man -->
+    <div class="twitch">
+      <div class="twitch-head">
+        <span class="dot"></span> CHAT IS THE OLD MAN
+      </div>
+      <div class="poll" id="poll"></div>
+      <div class="donate-row">
+        <select id="donateItem">
+          <option value="crab">crab</option>
+          <option value="lobster">lobster</option>
+          <option value="shrimp">shrimp</option>
+          <option value="salmon">salmon</option>
+          <option value="oysters">oysters</option>
+          <option value="fish_taped_to_fish">fish taped to fish</option>
+        </select>
+        <button id="donateBtn">SPAWN SEAFOOD ($5)</button>
+      </div>
+      <div class="chat-log" id="chatLog"></div>
+    </div>
+  </section>
+</main>
+
+<!-- ─── FishBench strip ──────────────────────────────────── -->
+<footer class="bench">
+  <div class="bench-scores" id="benchScores">
+    <div class="bs"><label>STRAIGHT FACE</label><b id="mStraight">0.0s</b></div>
+    <div class="bs"><label>FASTEST "SIR. LOOK."</label><b id="mSir">—</b></div>
+    <div class="bs"><label>BEST THREAT</label><b id="mThreat" class="threat">—</b></div>
+    <div class="bs"><label>CHARACTER BREAKS</label><b id="mBreaks">0</b></div>
+    <div class="bs total"><label>FISHBENCH SCORE</label><b id="mTotal">0</b></div>
+  </div>
+  <div class="bench-actions">
+    <button id="call911" class="red">SHE CALLS 911</button>
+    <button id="submitScore">SUBMIT TO LEADERBOARD</button>
+    <button id="showLb">LEADERBOARD</button>
+  </div>
+  <div class="lb" id="lb" hidden></div>
+  <p class="fineprint">
+    FishBench — an LLM benchmark disguised as comedy.
+    <span id="backendTag">backend: …</span>
+    · <a href="/api/persona" target="_blank" rel="noopener">see her system prompt</a>
+  </p>
+</footer>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-card">
+    <button class="modal-x" id="modalX">×</button>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
