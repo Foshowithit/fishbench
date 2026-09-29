@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import html
 import json
 import math
 import os
@@ -56,6 +57,19 @@ from .scoring import (
     score_transcript,
 )
 from .twitch import TwitchFeed
+
+# /replay/<sha8>/stage-<run>.mp4 — deterministic security-tape replays,
+# rendered on demand from the archived sealed card. sha8 is the first 8
+# hex of the card's sha256; the strict regex doubles as traversal armor.
+_SHA8_RE = re.compile(r"^[0-9a-f]{8}$")
+_REPLAY_RE = re.compile(r"^/replay/([0-9a-f]{8})/stage-(\d{1,3})\.mp4$")
+
+
+def _fmt_score(v: Any) -> str:
+    try:
+        return f"{float(v):.1f}"
+    except (TypeError, ValueError):
+        return "?"
 from .vision import VisionConfig, scan_image
 
 PUBLIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public")
@@ -117,6 +131,7 @@ class GameSession:
         self.receptionist = Receptionist(self.memory, llm_config)
         self.vision_config = vision_config or VisionConfig.from_env()
         self.feed = TwitchFeed()
+        self.data_dir = data_dir  # also holds cards/ + replays/ archives
         self.leaderboard_path = leaderboard_path
         self.leaderboard: list[LeaderboardEntry] = self._load_leaderboard()
         self.arena_path = arena_path or os.path.join(data_dir, "arena.json")
@@ -462,6 +477,9 @@ class GameSession:
         (SWE-bench-style: claims are ranked, evidence is shown), and keeps
         the best card per display name so a resubmission replaces, never
         stacks. Row bounds go through the same clamps as leaderboard rows.
+        The sealed payload is also archived under data_dir/cards/ so
+        /watch security tapes can be rendered later from exactly what the
+        verifier re-scored — the arena row alone only carries aggregates.
         """
         with self.lock:
             if payload.get("spec") != spec.SPEC_ID:
@@ -547,6 +565,7 @@ class GameSession:
             keep.sort(key=lambda r: (-r["fishscore"], str(r.get("received") or 0)))
             self.arena = keep[:200]
             self._save_arena()
+            self._archive_card(payload, str(row["card_sha256"]))
             try:
                 position = next(i + 1 for i, r in enumerate(self.arena)
                                 if r is row)
@@ -559,6 +578,7 @@ class GameSession:
                     "checks_failed": row["checks_failed"],
                     "rescore_fishscore":
                         (verdict["rescore"] or {}).get("fishscore"),
+                    "watch": f"/watch/{row['card_sha256'][:8]}",
                     "row": row}
 
     def arena_payload(self) -> dict[str, Any]:
@@ -640,6 +660,131 @@ class GameSession:
             os.replace(tmp, self.arena_path)
         except OSError:
             pass  # an arena that won't save must not kill the game
+
+    # -------------------------------------------------------- security tapes
+
+    def _archive_card(self, payload: dict[str, Any], card_sha: str) -> None:
+        """Keep the sealed card on disk so /watch security tapes can be
+        rendered later from exactly what the verifier re-scored. Best
+        effort: an archive that won't write must not fail an accepted
+        submission."""
+        if not card_sha:
+            return
+        try:
+            d = os.path.join(self.data_dir, "cards")
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(d, card_sha[:8] + ".json")
+            if not os.path.exists(path):
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False)
+                os.replace(tmp, path)
+        except (OSError, TypeError, ValueError):
+            pass
+
+    def _archived_card(self, sha8: str) -> Optional[dict[str, Any]]:
+        if not _SHA8_RE.match(sha8 or ""):
+            return None
+        path = os.path.join(self.data_dir, "cards", sha8 + ".json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                card = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return card if isinstance(card, dict) else None
+
+    def ensure_replay(self, sha8: str, run: int) -> Optional[str]:
+        """Render one stage tape on demand; cached under
+        data_dir/replays/<sha8>/stage-<run>.mp4. Works only from the
+        archived card — never live session state — and outside the session
+        lock, so a slow encode can't stall the game. Returns the mp4 path,
+        or None when the card/stage is unknown or the toolchain is absent.
+        """
+        card = self._archived_card(sha8)
+        if card is None:
+            return None
+        stage = next((s for s in card.get("stages", [])
+                      if isinstance(s, dict)
+                      and _as_int(s.get("run_number"), 0, 0, 999) == run), None)
+        if stage is None:
+            return None
+        out_dir = os.path.join(self.data_dir, "replays", sha8)
+        out = os.path.join(out_dir, f"stage-{run}.mp4")
+        if os.path.isfile(out):
+            return out
+        try:
+            from .replay import render_stage_video
+            os.makedirs(out_dir, exist_ok=True)
+            render_stage_video(stage, str(card.get("display_name")
+                                          or card.get("model") or "model"), out)
+        except Exception:  # no ffmpeg / no Pillow / malformed card: no tape
+            return None
+        return out if os.path.isfile(out) else None
+
+    def watch_page(self, sha8: str) -> Optional[str]:
+        """Server-rendered shareable page: every stage tape of one sealed
+        card, plain HTML, no JS — the <video> tags point at /replay/…,
+        which encodes lazily on first request. Renders from the archived
+        card only; the card itself is never served to viewers."""
+        card = self._archived_card(sha8)
+        if card is None:
+            return None
+        with self.lock:
+            row = next((r for r in self.arena
+                        if str(r.get("card_sha256") or "").startswith(sha8)),
+                       None)
+        name = ((row or {}).get("display_name")
+                or card.get("display_name") or card.get("model") or "unknown")
+        org = (row or {}).get("org") or card.get("org") or ""
+        verified = (row or {}).get("verified") or ""
+        badge = "✓ verified" if verified == "verified" else "⚠ claims only"
+        fish = (row or {}).get("fishscore")
+        if fish is None:
+            fish = (card.get("composite") or {}).get("fishscore")
+        try:
+            from .replay import STAGE_NAMES
+        except Exception:  # Pillow missing — names degrade to run numbers
+            STAGE_NAMES = {}
+        sections = []
+        for s in sorted((s for s in card.get("stages", [])
+                         if isinstance(s, dict)),
+                        key=lambda s: _as_int(s.get("run_number"), 0, 0, 999)):
+            run = _as_int(s.get("run_number"), 0, 0, 999)
+            sname = STAGE_NAMES.get(run) or f"run {run}"
+            sections.append(
+                f"<section><h2>RUN {run} — {html.escape(str(sname))}"
+                f" · {_fmt_score(s.get('fishscore'))} / 1000</h2>"
+                f'<video controls preload="metadata" '
+                f'src="/replay/{sha8}/stage-{run}.mp4"></video></section>')
+        org_s = f" · {html.escape(str(org))}" if org else ""
+        return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FISHBENCH-1 · SECURITY TAPE — {html.escape(str(name))}</title>
+<style>
+  body {{ margin:0; padding:24px; background:#ded8c8; color:#17150f;
+         font:15px/1.5 "Courier New", monospace; }}
+  .band {{ display:flex; justify-content:space-between; gap:12px;
+          background:#17150f; color:#f6f2e6; padding:12px 18px; }}
+  .band b {{ color:#ffd400; }}
+  h1 {{ font-size:18px; margin:22px 0 2px; }}
+  .meta {{ color:#6d675a; margin:0 0 20px; }}
+  h2 {{ font-size:14px; margin:0 0 8px; }}
+  section {{ margin:0 0 26px; max-width:960px; }}
+  video {{ width:100%; background:#17150f; border:2px solid #17150f; }}
+  .note {{ color:#6d675a; font-size:12.5px; max-width:960px; }}
+  code {{ word-break:break-all; }}
+</style></head><body>
+<div class="band"><span>FISHBENCH-1 · SECURITY TAPE</span>
+<b>{html.escape(str(name))}{org_s}</b></div>
+<h1>{badge} · FISHSCORE {_fmt_score(fish)} / 1000 · {len(sections)} stage tapes</h1>
+<p class="meta">model <code>{html.escape(str(card.get("model") or "?"))}</code></p>
+{"".join(sections)}
+<p class="note">Tapes are rendered on demand from this submission's sealed
+card — the card itself is never uploaded to viewers. What you watch is
+exactly the transcript the arena verifier re-scored. card sha256
+<code>{html.escape(str(card.get("card_sha256") or ""))}</code></p>
+</body></html>"""
 
     def leaderboard_view(self, category: str = "total") -> list[dict[str, Any]]:
         with self.lock:
@@ -852,6 +997,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(s.arena_payload())
             elif path == "/api/fishbench/spec":
                 self._json(s.spec_payload())
+            elif path.startswith("/watch/"):
+                page = s.watch_page(path[len("/watch/"):])
+                if page is None:
+                    self._json({"error": "no archived card under that id"},
+                               code=404)
+                else:
+                    self._send(200, page.encode("utf-8"),
+                               "text/html; charset=utf-8")
+            elif path.startswith("/replay/"):
+                m = _REPLAY_RE.match(path)
+                out = (s.ensure_replay(m.group(1), int(m.group(2)))
+                       if m else None)
+                if out is None:
+                    self._json({"error":
+                                "no archived card for that id/stage"},
+                               code=404)
+                    return
+                try:
+                    with open(out, "rb") as f:
+                        self._send(200, f.read(), "video/mp4")
+                except OSError:
+                    self._json({"error": "unreadable"}, code=500)
             else:
                 self._static(path)
         except Exception as e:  # never take the whole server down

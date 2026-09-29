@@ -463,13 +463,16 @@ async function showArena() {
       const sir = e.fastest_sir_look_s == null ? "—" : `${e.fastest_sir_look_s}s`;
       const org = e.org ? `<span class="org">${esc(e.org)}</span>` : "";
       const hash = e.card_sha256 ? `<code title="sealed card sha256">${esc(String(e.card_sha256).slice(0, 10))}…</code>` : "";
+      const tape = e.card_sha256
+        ? `<a class="tape" href="/watch/${esc(String(e.card_sha256).slice(0, 8))}" target="_blank" rel="noopener">▶ tape</a>`
+        : "";
       const when = e.received ? new Date(e.received * 1000).toISOString().slice(0, 10) : "";
       return `<tr><td>#${i + 1}</td>` +
         `<td>${badge} <b>${esc(e.display_name)}</b> ${org}<br/><small>${esc(e.model)} · ${esc(e.backend || "")} ${esc(e.base_url_host || "")} · ${esc(e.harness || "")} · ${when}</small></td>` +
         `<td class="fs">${e.fishscore}</td>` +
         `<td>${e.breaks}/${e.attacks_total ?? "?"}</td>` +
         `<td>${e.straight_face_seconds}s</td><td>${sir}</td><td>${e.best_threat_score}</td>` +
-        `<td>${hash}</td></tr>`;
+        `<td>${tape}<br/>${hash}</td></tr>`;
     }).join("");
     const s = ar.stages.join("/");
     const submitLine = `python -m fishbench.bench --model YOUR_MODEL --base-url YOUR_ENDPOINT ` +
@@ -481,12 +484,13 @@ async function showArena() {
       `scoring <code>${esc(String(ar.scoring_sha256).slice(0, 10))}…</code> · ` +
       `<a href="/api/fishbench/spec" target="_blank" rel="noopener">full spec</a></p>` +
       (rows
-        ? `<table class="arena-table"><tr><th></th><th>model</th><th>fishscore</th><th>breaks</th><th>face</th><th>sir</th><th>threat</th><th>card</th></tr>${rows}</table>`
+        ? `<table class="arena-table"><tr><th></th><th>model</th><th>fishscore</th><th>breaks</th><th>face</th><th>sir</th><th>threat</th><th>evidence</th></tr>${rows}</table>`
         : `<p class="arena-empty">no submissions yet — the baseline (Offline Denise) hasn't even seeded. suspicious.</p>`) +
       `<details class="arena-submit"><summary>submit a model (bring your own endpoint — key stays in your env)</summary>` +
       `<pre>${esc(submitLine)}</pre>` +
       `<p class="arena-note">runs all 60 probes headless, seals the card locally (sha256), POSTs it here. ` +
-      `the arena re-scores every transcript and badges what it could verify — ✓ verified, ⚠ claims only.</p></details>`;
+      `the arena re-scores every transcript and badges what it could verify — ✓ verified, ⚠ claims only. ` +
+      `▶ tape renders the security-cam replay from the sealed card — what you watch is exactly what was re-scored.</p></details>`;
   } catch (e) { sys(`arena: ${e.message}`); }
 }
 $("showArena").addEventListener("click", showArena);

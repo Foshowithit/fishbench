@@ -314,6 +314,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="per-request LLM timeout seconds (default 30)")
     ap.add_argument("--out", default="",
                     help="write the sealed card JSON here")
+    ap.add_argument("--replay", default="",
+                    help="render security-cam tape mp4s of every probed "
+                         "stage into DIR (needs Pillow + ffmpeg)")
     ap.add_argument("--submit", default="",
                     help="arena base URL (e.g. http://host:8383) — POSTs the "
                          "sealed card to /api/fishbench/arena after the run")
@@ -377,6 +380,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             f.write("\n")
         print(f"  card → {args.out}")
 
+    if args.replay:
+        try:
+            from .replay import render_card_replays
+            os.makedirs(args.replay, exist_ok=True)
+            tapes = render_card_replays(card, args.replay)
+        except Exception as e:  # no ffmpeg / no Pillow / encode failure
+            print(f"fishbench: --replay failed: {e}", file=sys.stderr)
+            return 2
+        for run in sorted(tapes):
+            print(f"  tape → {tapes[run]}")
+
     if args.submit:
         try:
             resp = _post_json(args.submit, card, timeout=max(30.0, args.timeout))
@@ -389,6 +403,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if resp.get("ok"):
             print(f"  submitted → position #{resp.get('position')} "
                   f"({resp.get('verified')})")
+            if resp.get("watch"):
+                print(f"  tapes → {args.submit.rstrip('/')}{resp['watch']}")
         else:
             print(f"  arena refused the card: {resp.get('error')}",
                   file=sys.stderr)

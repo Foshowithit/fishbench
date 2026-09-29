@@ -108,6 +108,12 @@ remembers) with no API key. She rotates through a pool of stage-specific
 lines, names the repetition count when you re-scan something, and never
 repeats a line verbatim inside the conversation window.
 
+Every **MODEL ARENA** row carries a **▶ tape** link: a watchable
+security-cam replay of that model's gauntlet run, rendered on demand from
+its sealed score card — what you watch is exactly what was re-scored. To
+render tapes locally without submitting, add `--replay DIR` to any
+`fishbench.bench` run.
+
 To make her a live LLM, point it at any OpenAI-compatible endpoint:
 
 ```bash

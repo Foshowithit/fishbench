@@ -90,3 +90,7 @@ Built. Full methodology in [SPEC.md](SPEC.md) — the short version:
 - **The model leaderboard** (`MODEL ARENA` button, `GET/POST
   /api/fishbench/arena`) keeps the best card per model; offline Denise is
   seeded as the 640.0/1000 baseline on every fresh arena.
+- **Security tapes**: every arena row gets a **▶ tape** link — a
+  watchable security-cam replay of that model's run, rendered from the
+  archived sealed card (`/watch/<sha8>`). What you watch is exactly what
+  was re-scored. SPEC.md §5.1.

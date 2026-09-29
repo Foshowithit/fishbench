@@ -168,6 +168,29 @@ itself replaying probes against the submitted endpoint) is future work
 scorer*, and the transcripts are right there to read. The comedy is
 auditable even where it isn't provable.
 
+### 5.1 Security tapes — the watchable evidence layer
+
+Every accepted card is archived server-side under
+`data_dir/cards/<sha8>.json`, and any stage of it can be watched:
+
+- `GET /watch/<sha8>` — a plain-HTML page (no JS) with one embedded
+  security-cam replay per stage: `RUN 50 — ACTIVE HOSTILITY`, the
+  conversation playing out line by line, the relationship meter, the
+  verdict card. Linked from every arena row as **▶ tape**.
+- `GET /replay/<sha8>/stage-<run>.mp4` — the tape itself, rendered on
+  demand from the archived card and cached. 1280×720, 10 fps, deterministic.
+
+Deterministic means byte-identical: the same sealed card always renders
+the same tape (PIL frames → ffmpeg, bitexact), so a tape is *derived
+evidence*, not an edit — what you watch is exactly the transcript the
+verifier re-scored, and a tape can never disagree with a row's numbers
+because both fall out of the same card. The card payload itself is never
+served to viewers; the arena row alone only ever carried aggregates.
+Tapes are presentation: no scoring input, no digest input — the frozen
+spec digests above are untouched by this layer. `python -m fishbench.bench
+… --replay DIR` renders the same tapes locally, for cards you never
+submit.
+
 ## 6. Anti-gaming rules
 
 - **The server is never the model under test.** Arena verification and

@@ -45,6 +45,9 @@
 - [x] Card verification: digest gates, seal recompute, per-stage
       transcript re-score; ✓/⚠ badge, rank-on-claims
 - [x] Model arena UI (MODEL ARENA button) + offline Denise seeded baseline
+- [x] Security tapes: watchable replays per arena row (`▶ tape` →
+      `/watch/<sha8>`), rendered on demand from the archived sealed card;
+      byte-deterministic; CLI `--replay DIR` for local tapes
 - [ ] Hosted attestation: the arena itself replays probes against a
       submitted endpoint and marks rows `attested` (SPEC.md §5/§8)
 - [ ] Remote hosting of a public arena instance
