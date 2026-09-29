@@ -1,6 +1,6 @@
 # Promo cuts — *That's a Fish Barcode*
 
-Compressed promo passes for FishBench v0.1, cut against what the repo actually
+Compressed promo passes for FishBench v0.4, cut against what the repo actually
 does. Every claim below is checkable in `fishbench/` (see **Truth guard** at the
 bottom for the four things deliberately cut).
 
@@ -163,7 +163,7 @@ whole argument.
 
 > "Yes, a fish. No, a real one."
 
-**Status.** v0.1 shipped and playable. Keyless out of the box (offline persona
+**Status.** v0.4 shipped and playable. Keyless out of the box (offline persona
 backend), or plug in any OpenAI-compatible model. 161 tests, zero
 dependencies, stdlib server, no build step.
 
