@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import html
 import json
 import math
@@ -41,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from . import __version__, spec
+from . import __version__, spec, tankspec
 from .bench import verify_card
 from .gauntlet import (
     ATTACKS, DEFAULT_PACE_S, run_gauntlet as run_probe_suite,
@@ -137,7 +138,11 @@ class GameSession:
         self.leaderboard: list[LeaderboardEntry] = self._load_leaderboard()
         self.arena_path = arena_path or os.path.join(data_dir, "arena.json")
         self.arena: list[dict[str, Any]] = self._load_arena()
+        self._backfill_row_metrics()
         self._seed_baseline()
+        # Re-ingest any archived card whose row vanished (arena.json is
+        # best-effort) — pure seal+re-score, no chromium ever runs at boot.
+        self._recover_arena_from_cards()
 
         self.run_id: str = ""
         self.run_started_at: float = 0.0
@@ -469,19 +474,23 @@ class GameSession:
             pass
 
     def submit_card(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """POST /api/fishbench/arena — ingest a sealed FishBench-1 card.
+        """POST /api/fishbench/arena — ingest a sealed card (either spec).
 
-        The arena refuses cards produced under a different attack pack or
-        scoring (the digests must match this server's fishbench-1 — a 400
-        in LiveBench terms), verifies the seal and re-scores every stage
-        transcript, ranks on the CLAIMED composite with a verified badge
-        (SWE-bench-style: claims are ranked, evidence is shown), and keeps
-        the best card per display name so a resubmission replaces, never
-        stacks. Row bounds go through the same clamps as leaderboard rows.
-        The sealed payload is also archived under data_dir/cards/ so
-        /watch security tapes can be rendered later from exactly what the
-        verifier re-scored — the arena row alone only carries aggregates.
+        FishBench-1 cards are verified by seal + transcript re-score;
+        fishbench-2 TANK cards by seal + measurement re-derivation (pure
+        tankspec functions — no re-render, no network). Both refuse cards
+        produced under a different pack/scoring (the digests must match
+        this server's frozen specs — a 400 in LiveBench terms), rank on
+        the CLAIMED composite with a verified badge (SWE-bench-style:
+        claims are ranked, evidence is shown), and keep the best card per
+        display name so a resubmission replaces, never stacks. Row bounds
+        go through the same clamps as leaderboard rows. The sealed payload
+        is also archived under data_dir/cards/ so /watch security tapes
+        can be served later from exactly what the verifier re-scored —
+        the arena row alone only carries aggregates.
         """
+        if payload.get("spec") == tankspec.SPEC_ID:
+            return self._submit_tank_card(payload)
         with self.lock:
             if payload.get("spec") != spec.SPEC_ID:
                 return {"ok": False, "error":
@@ -516,6 +525,7 @@ class GameSession:
             display = _cap(payload.get("display_name") or model, 60)
             row = {
                 "spec": spec.SPEC_ID,
+                "metric": "FishScore",
                 "model": model,
                 "display_name": display,
                 "org": _cap(payload.get("org") or "", 60),
@@ -526,6 +536,7 @@ class GameSession:
                                        spec.TEMPERATURE, 0.0, 2.0),
                 "pace_s": _as_num(payload.get("pace_s"), spec.PACE_S, 0.1, 600.0),
                 "fishscore": _as_num(composite.get("fishscore"), 0.0, 0.0, 1000.0),
+                "score": _as_num(composite.get("fishscore"), 0.0, 0.0, 1000.0),
                 "breaks": _as_int(composite.get("character_breaks"), 0, 0, 1_000_000),
                 "straight_face_seconds": _as_num(
                     composite.get("straight_face_seconds_total"), 0.0, 0.0, 1_000_000.0),
@@ -549,8 +560,9 @@ class GameSession:
             # both self-washing and name-squatting a rival's row down).
             key = display.lower()
             old = next((r for r in self.arena
-                        if r.get("display_name", "").lower() == key), None)
-            if old is not None and row["fishscore"] < old["fishscore"]:
+                        if r.get("display_name", "").lower() == key
+                        and r.get("spec") == row["spec"]), None)
+            if old is not None and row["score"] < old.get("score", 0.0):
                 position = self.arena.index(old) + 1
                 return {"ok": True, "position": position,
                         "verified": row["verified"],
@@ -561,19 +573,19 @@ class GameSession:
                         "kept": "an existing card for this name scores "
                                 "higher — kept it"}
             keep = [r for r in self.arena
-                    if r.get("display_name", "").lower() != key]
+                    if r.get("display_name", "").lower() != key
+                    or r.get("spec") != row["spec"]]
             keep.append(row)
-            keep.sort(key=lambda r: (-r["fishscore"], str(r.get("received") or 0)))
+            keep.sort(key=lambda r: (-r.get("score", 0.0),
+                                     str(r.get("received") or 0)))
             self.arena = keep[:200]
             self._save_arena()
             self._archive_card(payload, str(row["card_sha256"]))
-            try:
-                position = next(i + 1 for i, r in enumerate(self.arena)
-                                if r is row)
-            except StopIteration:
-                # tie-broken off the end of a full board — accepted, ranked
-                # below the cap, not displayed
-                position = len(self.arena) + 1
+            # Position within this spec's board, not the mixed store.
+            same_spec = [r for r in self.arena
+                         if r.get("spec") == spec.SPEC_ID]
+            position = (next((i + 1 for i, r in enumerate(same_spec)
+                              if r is row), len(same_spec) + 1))
             return {"ok": True, "position": position,
                     "verified": row["verified"],
                     "checks_failed": row["checks_failed"],
@@ -582,21 +594,155 @@ class GameSession:
                     "watch": f"/watch/{row['card_sha256'][:8]}",
                     "row": row}
 
+    def _submit_tank_card(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Ingest a sealed fishbench-2 TANK card. Same contract as fb-1:
+        digests must match this server's frozen tank spec, the seal and
+        every stage's measurements are re-derived by pure tankspec
+        functions (verify_tank_card never renders — boot stays chromium
+        free), ranking is on the claimed TankScore with a verified badge,
+        one row per name, resubmission can only improve it."""
+        with self.lock:
+            digest = payload.get("spec_digest") or {}
+            if (digest.get("brief_pack_sha256") != tankspec.brief_pack_digest()
+                    or digest.get("scoring_sha256")
+                    != tankspec.scoring_digest()):
+                return {"ok": False, "error":
+                        "card was produced under a different tank brief pack "
+                        "or scoring — re-run against the current fishbench"}
+            stages_in = payload.get("stages")
+            if not isinstance(stages_in, list) or not stages_in:
+                return {"ok": False, "error": "card has no stages"}
+            stages_in = [s for s in stages_in[:24] if isinstance(s, dict)]
+            if not stages_in:
+                return {"ok": False, "error": "card stages are malformed"}
+
+            from .tank import verify_tank_card  # lazy: tank.py pulls capture
+            verdict = verify_tank_card(payload)
+            composite = payload.get("composite") or {}
+            model = _cap(payload.get("model") or "unknown", 60)
+            display = _cap(payload.get("display_name") or model, 60)
+            tankscore = _as_num(composite.get("tankscore"), 0.0, 0.0, 1000.0)
+            row = {
+                "spec": tankspec.SPEC_ID,
+                "metric": "TankScore",
+                "model": model,
+                "display_name": display,
+                "org": _cap(payload.get("org") or "", 60),
+                "backend": _cap(payload.get("backend") or "", 20),
+                "base_url_host": _cap(payload.get("base_url_host") or "", 120),
+                "harness": _cap(payload.get("harness") or "", 20),
+                "tankscore": tankscore,
+                "score": tankscore,
+                "fish_requested_total": _as_int(
+                    composite.get("fish_requested_total"), 0, 0, 10_000_000),
+                "stages_total": _as_int(composite.get("stages_total"),
+                                        0, 0, 1_000),
+                "tank_crashes": _as_int(composite.get("tank_crashes"),
+                                        0, 0, 1_000),
+                "console_errors_total": _as_int(
+                    composite.get("console_errors_total"), 0, 0, 1_000_000),
+                "page_errors_total": _as_int(
+                    composite.get("page_errors_total"), 0, 0, 1_000_000),
+                "categories": composite.get("categories") or {},
+                "fish_estimates": composite.get("fish_estimates") or {},
+                "fps_by_stage": composite.get("fps_by_stage") or {},
+                "stages": {str(s.get("fish_requested") or i):
+                           _as_num(s.get("tankscore"), 0.0, 0.0, 1000.0)
+                           for i, s in enumerate(stages_in, 1)},
+                "stage_fish": {str(s.get("fish_requested") or i):
+                               _as_int((s.get("measurements") or {})
+                                       .get("fish_estimate"), 0, 0, 100_000)
+                               for i, s in enumerate(stages_in, 1)},
+                "verified": verdict.get("verified", "unverified"),
+                "checks_failed": [c.get("check") for c in verdict.get("checks", [])
+                                  if not c.get("ok")],
+                "card_sha256": _cap(payload.get("card_sha256") or "", 64),
+                "received": time.time(),
+            }
+            # Same identity + keep-if-lower contract as fb-1 (per spec).
+            key = display.lower()
+            old = next((r for r in self.arena
+                        if r.get("display_name", "").lower() == key
+                        and r.get("spec") == tankspec.SPEC_ID), None)
+            if old is not None and row["score"] < old.get("score", 0.0):
+                position = self.arena.index(old) + 1
+                return {"ok": True, "position": position,
+                        "verified": row["verified"],
+                        "checks_failed": row["checks_failed"],
+                        "row": old,
+                        "kept": "an existing card for this name scores "
+                                "higher — kept it"}
+            keep = [r for r in self.arena
+                    if r.get("display_name", "").lower() != key
+                    or r.get("spec") != tankspec.SPEC_ID]
+            keep.append(row)
+            keep.sort(key=lambda r: (-r.get("score", 0.0),
+                                     str(r.get("received") or 0)))
+            self.arena = keep[:200]
+            self._save_arena()
+            self._archive_card(payload, str(row["card_sha256"]))
+            # Position within this spec's board, not the mixed store.
+            same_spec = [r for r in self.arena
+                         if r.get("spec") == tankspec.SPEC_ID]
+            position = (next((i + 1 for i, r in enumerate(same_spec)
+                              if r is row), len(same_spec) + 1))
+            return {"ok": True, "position": position,
+                    "verified": row["verified"],
+                    "checks_failed": row["checks_failed"],
+                    "watch": f"/watch/{row['card_sha256'][:8]}",
+                    "row": row}
+
     def arena_payload(self) -> dict[str, Any]:
         with self.lock:
             rows = sorted(self.arena,
-                          key=lambda r: (-r["fishscore"],
+                          key=lambda r: (-r.get("score", 0.0),
                                          str(r.get("received") or 0)))
+            def board(spec_id: str) -> list[dict[str, Any]]:
+                return [r for r in rows if r.get("spec") == spec_id]
             return {
+                # fb-1 keys kept top-level for old clients; boards come in
+                # "specs" — one per frozen spec, each independently ranked.
                 "spec": spec.SPEC_ID,
                 "spec_date": spec.SPEC_DATE,
-                "entries": rows,
+                "entries": board(spec.SPEC_ID),
                 "attack_pack_sha256": spec.attack_pack_digest(ATTACKS),
                 "scoring_sha256": spec.scoring_digest(),
                 "weights": spec.CATEGORY_WEIGHTS,
                 "stages": list(spec.STAGES),
                 "temperature": spec.TEMPERATURE,
                 "pace_s": spec.PACE_S,
+                "specs": [
+                    {"spec": spec.SPEC_ID,
+                     "title": "FISHBENCH-1 · DIALOGUE GAUNTLET",
+                     "metric": "FishScore", "range": [0, 1000],
+                     "spec_date": spec.SPEC_DATE,
+                     "weights": spec.CATEGORY_WEIGHTS,
+                     "stages": list(spec.STAGES),
+                     "attacks_per_stage": len(ATTACKS),
+                     "temperature": spec.TEMPERATURE, "pace_s": spec.PACE_S,
+                     "attack_pack_sha256": spec.attack_pack_digest(ATTACKS),
+                     "scoring_sha256": spec.scoring_digest(),
+                     "submit": "python -m fishbench.bench --model ID "
+                               "--base-url URL --api-key-env KEY_VAR "
+                               '--name "Name" --org "Lab" --submit '
+                               f"{''}ARENA_URL",
+                     "entries": board(spec.SPEC_ID)},
+                    {"spec": tankspec.SPEC_ID,
+                     "title": "FISHBENCH-2 · TANK (three.js at scale)",
+                     "metric": "TankScore", "range": [0, 1000],
+                     "spec_date": tankspec.SPEC_DATE,
+                     "weights": dict(tankspec.CATEGORY_WEIGHTS),
+                     "stages": list(tankspec.STAGES),
+                     "run_seconds": tankspec.RUN_SECONDS,
+                     "sample_hz": tankspec.SAMPLE_HZ,
+                     "brief_pack_sha256": tankspec.brief_pack_digest(),
+                     "scoring_sha256": tankspec.scoring_digest(),
+                     "submit": "python -m fishbench.tank --model ID "
+                               "--base-url URL --api-key-env KEY_VAR "
+                               '--name "Name" --org "Lab" --tapes TAPES_DIR '
+                               "--submit ARENA_URL",
+                     "entries": board(tankspec.SPEC_ID)},
+                ],
             }
 
     def spec_payload(self) -> dict[str, Any]:
@@ -633,6 +779,57 @@ class GameSession:
                                 "per_break": -spec.BREAK_PENALTY},
             },
             "attacks": [asdict(a) for a in ATTACKS],
+            "tank": {
+                "spec": tankspec.SPEC_ID,
+                "spec_date": tankspec.SPEC_DATE,
+                "metric": {
+                    "name": "TankScore",
+                    "range": [0, 1000],
+                    "aggregation": "mean of stage TankScores; each stage "
+                                   "is weighted categories ×10 − error "
+                                   "penalties",
+                    "weights": dict(tankspec.CATEGORY_WEIGHTS),
+                    "category_formulas": {
+                        "clean_boot":
+                            "max(0, 100 − 10×console_errors − "
+                            "35×page_errors); 0 unless the canvas drew",
+                        "fish_on_screen":
+                            f"N≤{tankspec.COUNT_SPLIT}: "
+                            "100×min(fish_estimate,N)/N; "
+                            f"N>{tankspec.COUNT_SPLIT}: 100×min(coverage, "
+                            f"target)/target, target=min("
+                            f"{tankspec.COV_CAP:g}, "
+                            f"{tankspec.COV_PER_FISH:g}×N)",
+                        "sustained_swimming":
+                            "100×alive_windows/8 (2.5s windows, "
+                            "motion above the measured noise floor)",
+                        "fps_at_scale": "min(100, fps × 8)",
+                    },
+                    "adjustments": {
+                        "per_console_error": -tankspec.CONSOLE_ERROR_COST,
+                        "per_page_error": -tankspec.PAGE_ERROR_COST,
+                    },
+                },
+                "schedule": {
+                    "ladder": list(tankspec.STAGES),
+                    "run_seconds": tankspec.RUN_SECONDS,
+                    "sample_hz": tankspec.SAMPLE_HZ,
+                    "viewport": list(tankspec.VIEWPORT),
+                    "analysis": list(tankspec.ANALYSIS_SIZE),
+                },
+                "brief_pack_sha256": tankspec.brief_pack_digest(),
+                "scoring_sha256": tankspec.scoring_digest(),
+                "submission": {
+                    "cli": "python -m fishbench.tank --model ID --base-url "
+                           "URL --api-key-env KEY_VAR [--tapes DIR] "
+                           "[--submit arena_url]",
+                    "endpoint": "POST /api/fishbench/arena",
+                    "artifact": "sealed card JSON (source verbatim + "
+                                "measurements + tape manifest)",
+                    "tapes": "mp4 TAPE per stage, deposited by the runner "
+                             "and served iff sha256 matches the manifest",
+                },
+            },
             "submission": {
                 "cli": "python -m fishbench.bench --model ID --base-url URL "
                        "--api-key-env KEY_VAR [--submit arena_url]",
@@ -651,6 +848,45 @@ class GameSession:
         except (OSError, ValueError, TypeError):
             return []
         return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+    def _backfill_row_metrics(self) -> None:
+        """Old rows predate the unified 'score'/'metric' fields — derive
+        them in place so every sort and board render has one key."""
+        for r in self.arena:
+            if r.get("spec") == tankspec.SPEC_ID:
+                r.setdefault("metric", "TankScore")
+                r.setdefault("score", r.get("tankscore", 0.0))
+            else:
+                r.setdefault("metric", "FishScore")
+                r.setdefault("score", r.get("fishscore", 0.0))
+
+    def _recover_arena_from_cards(self) -> None:
+        """Re-ingest archived cards whose arena rows are gone (arena.json
+        is best-effort; cards/ is the durable record). Pure seal +
+        re-derivation via submit_card — no chromium, no network — so boot
+        stays fast and offline-safe. Skips cards already on the board by
+        hash; failures are silent (a corrupt archive must not kill boot).
+        """
+        cards_dir = os.path.join(self.data_dir, "cards")
+        try:
+            names = sorted(os.listdir(cards_dir))
+        except OSError:
+            return
+        with self.lock:
+            known = {str(r.get("card_sha256") or "")[:8] for r in self.arena}
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            sha8 = name[:-5]
+            if not _SHA8_RE.match(sha8) or sha8 in known:
+                continue
+            card = self._archived_card(sha8)
+            if not isinstance(card, dict) or not card.get("spec"):
+                continue
+            try:
+                self.submit_card(card)
+            except Exception:
+                continue
 
     def _save_arena(self) -> None:
         try:
@@ -695,15 +931,22 @@ class GameSession:
         return card if isinstance(card, dict) else None
 
     def ensure_replay(self, sha8: str, run: int) -> Optional[str]:
-        """Render one stage tape on demand; cached under
-        data_dir/replays/<sha8>/stage-<run>.mp4. Works only from the
-        archived card — never live session state — and outside the session
-        lock, so a slow encode can't stall the game. Returns the mp4 path,
-        or None when the card/stage is unknown or the toolchain is absent.
+        """Serve one stage tape on demand under data_dir/replays/<sha8>/.
+
+        fb-1: renders lazily from the archived card via replay.render_stage_video.
+        fishbench-2: the mp4 is EVIDENCE deposited by the runner — served
+        iff its sha256 matches the card's sealed tape manifest, and never
+        re-encoded (a re-rendered tape would not be the film that was
+        measured). Works only from the archived card — never live session
+        state — and outside the session lock, so a slow encode can't stall
+        the game. Returns the mp4 path, or None when the card/stage is
+        unknown or the toolchain is absent.
         """
         card = self._archived_card(sha8)
         if card is None:
             return None
+        if card.get("spec") == tankspec.SPEC_ID:
+            return self._ensure_tank_tape(card, sha8, run)
         stage = next((s for s in card.get("stages", [])
                       if isinstance(s, dict)
                       and _as_int(s.get("run_number"), 0, 0, 999) == run), None)
@@ -722,6 +965,29 @@ class GameSession:
             return None
         return out if os.path.isfile(out) else None
 
+    def _ensure_tank_tape(self, card: dict[str, Any], sha8: str,
+                          run: int) -> Optional[str]:
+        """Tank tapes are deposited, not rendered: serve the file only when
+        it hashes to the manifest sealed inside the card. Anything else is
+        an honest 404 — a missing or mismatched tape is exactly what the
+        viewer should learn."""
+        stage = next((s for s in card.get("stages", [])
+                      if isinstance(s, dict)
+                      and _as_int(s.get("run_number"), 0, 0, 999) == run), None)
+        if stage is None:
+            return None
+        want = (stage.get("tape") or {}).get("sha256")
+        path = os.path.join(self.data_dir, "replays", sha8,
+                            f"stage-{run}.mp4")
+        if not want or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "rb") as f:
+                got = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            return None
+        return path if got == want else None
+
     def watch_page(self, sha8: str) -> Optional[str]:
         """Server-rendered shareable page: every stage tape of one sealed
         card, plain HTML, no JS — the <video> tags point at /replay/…,
@@ -730,6 +996,8 @@ class GameSession:
         card = self._archived_card(sha8)
         if card is None:
             return None
+        if card.get("spec") == tankspec.SPEC_ID:
+            return self._tank_watch_page(sha8, card)
         with self.lock:
             row = next((r for r in self.arena
                         if str(r.get("card_sha256") or "").startswith(sha8)),
@@ -775,7 +1043,7 @@ class GameSession:
   video {{ width:100%; background:#17150f; border:2px solid #17150f; }}
   .note {{ color:#6d675a; font-size:12.5px; max-width:960px; }}
   code {{ word-break:break-all; }}
-</style></head><body>
+        </style></head><body>
 <div class="band"><span>FISHBENCH-1 · SECURITY TAPE</span>
 <b>{html.escape(str(name))}{org_s}</b></div>
 <h1>{badge} · FISHSCORE {_fmt_score(fish)} / 1000 · {len(sections)} stage tapes</h1>
@@ -784,6 +1052,90 @@ class GameSession:
 <p class="note">Tapes are rendered on demand from this submission's sealed
 card — the card itself is never uploaded to viewers. What you watch is
 exactly the transcript the arena verifier re-scored. card sha256
+<code>{html.escape(str(card.get("card_sha256") or ""))}</code></p>
+</body></html>"""
+
+    def _tank_watch_page(self, sha8: str, card: dict[str, Any]) -> str:
+        """fishbench-2 tape room: the six tank films of one sealed card,
+        each with its measured numbers next to the video so the film and
+        the score can be checked against each other. Tapes are served
+        only when they hash to the sealed manifest — a missing film shows
+        as missing, never re-rendered."""
+        with self.lock:
+            row = next((r for r in self.arena
+                        if str(r.get("card_sha256") or "").startswith(sha8)),
+                       None)
+        name = ((row or {}).get("display_name")
+                or card.get("display_name") or card.get("model") or "unknown")
+        org = (row or {}).get("org") or card.get("org") or ""
+        verified = (row or {}).get("verified") or ""
+        badge = "✓ verified" if verified == "verified" else "⚠ claims only"
+        comp = card.get("composite") or {}
+        tankscore = (row or {}).get("tankscore", comp.get("tankscore"))
+        stages = sorted((s for s in card.get("stages", [])
+                         if isinstance(s, dict)),
+                        key=lambda s: _as_int(s.get("run_number"), 0, 0, 999))
+        sections = []
+        for s in stages:
+            run = _as_int(s.get("run_number"), 0, 0, 999)
+            n = s.get("fish_requested")
+            m = s.get("measurements") or {}
+            tape = s.get("tape") or {}
+            est = m.get("fish_estimate")
+            fps = m.get("fps")
+            cov = m.get("motion_coverage")
+            cov_s = f"{float(cov) * 100:.1f}%" if cov is not None else "?"
+            has_tape = bool(tape.get("sha256"))
+            video = (f'<video controls preload="metadata" '
+                     f'src="/replay/{sha8}/stage-{run}.mp4"></video>'
+                     if has_tape else
+                     '<p class="missing">no tape deposited for this stage '
+                     "(the card sealed without a film — nothing is faked "
+                     "here)</p>")
+            sections.append(
+                f"<section><h2>N={html.escape(str(n))} FISH · "
+                f"TANKSCORE {_fmt_score(s.get('tankscore'))} / 1000 · "
+                f"measured est {html.escape(str(est))} · "
+                f"cov {cov_s} · fps "
+                f"{html.escape(str(fps) if fps is not None else '?')}"
+                f"</h2>{video}</section>")
+        cats = comp.get("categories") or {}
+        cat_line = " · ".join(
+            f"{k.replace('_', ' ')} {_fmt_score(v)}"
+            for k, v in cats.items()) or "no categories"
+        org_s = f" · {html.escape(str(org))}" if org else ""
+        return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FISHBENCH-2 · TANK TAPES — {html.escape(str(name))}</title>
+<style>
+  body {{ margin:0; padding:24px; background:#0b1118; color:#dbe6f2;
+         font:15px/1.5 "Courier New", monospace; }}
+  .band {{ display:flex; justify-content:space-between; gap:12px;
+          background:#04070b; color:#8fc7ff; padding:12px 18px; }}
+  .band b {{ color:#ff9d45; }}
+  h1 {{ font-size:18px; margin:22px 0 2px; }}
+  .meta {{ color:#5d7185; margin:0 0 6px; }}
+  .cats {{ color:#8fc7ff; margin:0 0 20px; }}
+  h2 {{ font-size:14px; margin:0 0 8px; }}
+  section {{ margin:0 0 26px; max-width:960px; }}
+  video {{ width:100%; background:#04070b; border:2px solid #04070b; }}
+  .missing {{ color:#5d7185; font-style:italic; padding:12px;
+             border:1px dashed #24303c; }}
+  .note {{ color:#5d7185; font-size:12.5px; max-width:960px; }}
+  code {{ word-break:break-all; }}
+</style></head><body>
+<div class="band"><span>FISHBENCH-2 · TANK TAPES</span>
+<b>{html.escape(str(name))}{org_s}</b></div>
+<h1>{badge} · TANKSCORE {_fmt_score(tankscore)} / 1000 · {len(stages)} tank films</h1>
+<p class="meta">model <code>{html.escape(str(card.get("model") or "?"))}</code>
+· ladder {"/".join(str(s.get("fish_requested")) for s in stages)} fish ·
+{tankspec.RUN_SECONDS}s filmed @ {tankspec.SAMPLE_HZ}hz software-WebGL</p>
+<p class="cats">{cat_line}</p>
+{"".join(sections)}
+<p class="note">Each film is served only if it hashes to the sha256 sealed
+in the card's tape manifest — the arena never re-renders a tank tape.
+What you watch is the film the measurements were taken from. card sha256
 <code>{html.escape(str(card.get("card_sha256") or ""))}</code></p>
 </body></html>"""
 
@@ -849,6 +1201,17 @@ exactly the transcript the arena verifier re-scored. card sha256
         card_b = self._archived_card(sha_b)
         if card_a is None or card_b is None:
             return None
+        if card_a.get("spec") != card_b.get("spec"):
+            return ("<!doctype html><html lang=\"en\"><head><meta charset="
+                    "\"utf-8\"><title>FISHBENCH · NOT COMPARABLE</title>"
+                    "</head><body style=\"font:15px/1.5 'Courier New',"
+                    "monospace;background:#17150f;color:#f6f2e6;padding:40px\">"
+                    "<h1>not comparable</h1><p>these two cards were sealed "
+                    "under different specs — a FishScore and a TankScore "
+                    "share no scale. compare within one board.</p></body>"
+                    "</html>")
+        if card_a.get("spec") == tankspec.SPEC_ID:
+            return self._tank_compare_page(sha_a, sha_b, card_a, card_b)
         with self.lock:
             rows = {str(r.get("card_sha256") or "")[:8]: r for r in self.arena}
         A = self._compare_side(sha_a, card_a, rows.get(sha_a))
@@ -1014,6 +1377,177 @@ exactly the transcript the arena verifier re-scored. card sha256
 cards — exactly the transcripts the arena verifier re-scored; the card
 payloads themselves are never uploaded to viewers. Scores rank on claimed
 numbers with the badge showing what the arena could verify.
+cards <code>{html.escape(str(card_a.get("card_sha256") or ""))}</code> ·
+<code>{html.escape(str(card_b.get("card_sha256") or ""))}</code></p>
+</body></html>"""
+
+    # ------------------------------------------------- fishbench-2 head-to-head
+
+    @staticmethod
+    def _tank_side(sha8: str, card: dict[str, Any],
+                   row: Optional[dict[str, Any]]) -> dict[str, Any]:
+        comp = card.get("composite") or {}
+        stages = sorted((s for s in card.get("stages", [])
+                         if isinstance(s, dict)),
+                        key=lambda s: _as_int(s.get("run_number"), 0, 0, 999))
+        return {
+            "sha8": sha8,
+            "name": (row or {}).get("display_name")
+                    or card.get("display_name") or card.get("model") or "?",
+            "org": (row or {}).get("org") or card.get("org") or "",
+            "model": card.get("model") or "?",
+            "verified": (row or {}).get("verified") or "",
+            "tankscore": (row or {}).get("tankscore")
+                          if (row or {}).get("tankscore") is not None
+                          else comp.get("tankscore"),
+            "categories": comp.get("categories") or {},
+            "crashes": comp.get("tank_crashes"),
+            "console": comp.get("console_errors_total"),
+            "page": comp.get("page_errors_total"),
+            "stages": stages,
+            "fish_estimates": comp.get("fish_estimates") or {},
+            "fps_by_stage": comp.get("fps_by_stage") or {},
+        }
+
+    def _tank_compare_page(self, sha_a: str, sha_b: str,
+                           card_a: dict[str, Any],
+                           card_b: dict[str, Any]) -> str:
+        """Tank duel: TankScore face-off, category and per-stage tables with
+        winner chips, and both films of every stage side by side — the
+        eye can check what the numbers claim. Tapes serve only from the
+        sealed manifest, exactly like /watch."""
+        with self.lock:
+            rows = {str(r.get("card_sha256") or "")[:8]: r for r in self.arena}
+        A = self._tank_side(sha_a, card_a, rows.get(sha_a))
+        B = self._tank_side(sha_b, card_b, rows.get(sha_b))
+
+        def ts(side: dict[str, Any]) -> float:
+            return _as_num(side["tankscore"], -1.0, 0, 1000)
+
+        def chip(won: bool) -> str:
+            return '<span class="win">WIN</span>' if won else ""
+
+        win_a, win_b = ts(A) > ts(B), ts(B) > ts(A)
+        cat_rows = []
+        for cat, label in [("clean_boot", "clean boot"),
+                           ("fish_on_screen", "fish on screen"),
+                           ("sustained_swimming", "sustained swimming"),
+                           ("fps_at_scale", "fps at scale")]:
+            va = _as_num(A["categories"].get(cat), -1.0, 0, 100)
+            vb = _as_num(B["categories"].get(cat), -1.0, 0, 100)
+            cat_rows.append(
+                f"<tr><td class=\"lbl\">{label}</td>"
+                f"<td>{va:g} {chip(va > vb)}</td>"
+                f"<td>{vb:g} {chip(vb > va)}</td></tr>")
+        err_rows = []
+        for key, label in [("crashes", "tank crashes"),
+                           ("console", "console errors"),
+                           ("page", "page errors")]:
+            err_rows.append(
+                f"<tr><td class=\"lbl\">{label}</td>"
+                f"<td>{A[key] if A[key] is not None else '—'}</td>"
+                f"<td>{B[key] if B[key] is not None else '—'}</td></tr>")
+
+        sections = []
+        runs = sorted({s.get("run_number") for s in A["stages"] + B["stages"]})
+        by_n = lambda side: {s.get("run_number"): s for s in side["stages"]}
+        an, bn = by_n(A), by_n(B)
+        for run in runs:
+            sa, sb = an.get(run), bn.get(run)
+            cells = []
+            for side, s in ((A, sa), (B, sb)):
+                if s is None:
+                    cells.append('<div class="cell"><p class="nope">'
+                                 "no such stage in this card</p></div>")
+                    continue
+                m = s.get("measurements") or {}
+                cov = m.get("motion_coverage")
+                cov_s = (f"{float(cov) * 100:.1f}%" if cov is not None
+                         else "?")
+                tape_ok = bool((s.get("tape") or {}).get("sha256"))
+                video = (f'<video controls preload="metadata" '
+                         f'src="/replay/{side["sha8"]}/stage-{run}.mp4">'
+                         f"</video>" if tape_ok else
+                         '<p class="nope">no tape deposited</p>')
+                cells.append(
+                    f'<div class="cell"><div class="scoreline">'
+                    f"<b>{html.escape(str(side['name']))}</b>"
+                    f"<span>{_fmt_score(s.get('tankscore'))} / 1000</span>"
+                    f"</div><div class=\"bar\"><div class=\"fill\" "
+                    f"style=\"width:{_as_num(s.get('tankscore'), 0, 0, 1000) / 10:g}%\">"
+                    f"</div></div>"
+                    f"<p class=\"sub\">est {html.escape(str(m.get('fish_estimate')))}"
+                    f" · cov {cov_s} · fps "
+                    f"{html.escape(str(m.get('fps')) if m.get('fps') is not None else '?')}"
+                    f"</p>{video}</div>")
+            n = (sa or sb or {}).get("fish_requested")
+            winner = ""
+            if sa is not None and sb is not None:
+                d = (_as_num(sa.get("tankscore"), 0, 0, 1000)
+                     - _as_num(sb.get("tankscore"), 0, 0, 1000))
+                winner = (f' <span class="stagewin">{"← A" if d > 0 else "B →" if d < 0 else "tie"}'
+                          f" by {abs(d):g}</span>")
+            sections.append(
+                f'<section><h2>N={html.escape(str(n))} FISH{winner}</h2>'
+                f'<div class="tapes">{cells[0]}{cells[1]}</div></section>')
+
+        def duel(side: dict[str, Any], won: bool) -> str:
+            org_s = (f' <span class="org">{html.escape(str(side["org"]))}</span>'
+                     if side["org"] else "")
+            badge = ("✓" if side["verified"] == "verified" else "⚠")
+            return (f'<div class="side"><div class="name">'
+                    f"{html.escape(str(side['name']))}{org_s} {chip(won)}"
+                    f"</div><div class=\"big\">{_fmt_score(side['tankscore'])}"
+                    f"</div><div class=\"sub\">/ 1000 TankScore · {badge} "
+                    f"{html.escape(str(side['model']))}</div></div>")
+
+        return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FISHBENCH-2 · TANK DUEL — {html.escape(str(A["name"]))} vs {html.escape(str(B["name"]))}</title>
+<style>
+  body {{ margin:0; padding:24px; background:#0b1118; color:#dbe6f2;
+         font:15px/1.5 "Courier New", monospace; }}
+  .band {{ display:flex; justify-content:space-between; gap:12px;
+          background:#04070b; color:#8fc7ff; padding:12px 18px; }}
+  .band b {{ color:#ff9d45; }}
+  .duel {{ display:grid; grid-template-columns:1fr 1fr; gap:14px;
+          margin:22px 0 6px; }}
+  .side {{ border:2px solid #04070b; background:#101a26; padding:14px 16px; }}
+  .name {{ font-size:17px; font-weight:bold; }}
+  .org {{ font-weight:normal; color:#5d7185; }}
+  .big {{ font-size:44px; line-height:1.1; margin:6px 0 2px; color:#8fc7ff; }}
+  .sub {{ color:#5d7185; font-size:12.5px; }}
+  table {{ border-collapse:collapse; margin:10px 0 24px; width:100%;
+          max-width:960px; }}
+  td, th {{ border:2px solid #04070b; padding:6px 10px; text-align:left; }}
+  td.lbl {{ background:#04070b; color:#8fc7ff; width:180px; }}
+  .win {{ background:#1f9d55; color:#f6f2e6; padding:0 6px;
+         margin-left:6px; font-size:11.5px; }}
+  h2 {{ font-size:14px; margin:0 0 8px; }}
+  .stagewin {{ color:#5d7185; font-weight:normal; }}
+  section {{ margin:0 0 26px; max-width:1100px; }}
+  .tapes {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
+  .cell {{ border:2px solid #04070b; background:#101a26; padding:10px; }}
+  .scoreline {{ display:flex; justify-content:space-between; margin-bottom:6px; }}
+  .bar {{ height:10px; background:#0b1118; border:1px solid #04070b;
+         margin-bottom:8px; }}
+  .fill {{ height:100%; background:#ff9d45; }}
+  video {{ width:100%; background:#04070b; border:2px solid #04070b; }}
+  .nope {{ color:#5d7185; padding:20px 0; text-align:center; }}
+  .note {{ color:#5d7185; font-size:12.5px; max-width:960px; }}
+  code {{ word-break:break-all; }}
+</style></head><body>
+<div class="band"><span>FISHBENCH-2 · TANK DUEL</span>
+<b>{html.escape(str(A["name"]))} ⚔ {html.escape(str(B["name"]))}</b></div>
+<div class="duel">{duel(A, win_a)}{duel(B, win_b)}</div>
+<table><tr><th>category</th><th>{html.escape(str(A["name"]))}</th>
+<th>{html.escape(str(B["name"]))}</th></tr>{"".join(cat_rows)}
+{"".join(err_rows)}</table>
+{"".join(sections)}
+<p class="note">Films are served only when they hash to each card's sealed
+tape manifest — never re-rendered. TankScores rank on claimed numbers;
+the badge shows what the arena re-derived from raw measurements.
 cards <code>{html.escape(str(card_a.get("card_sha256") or ""))}</code> ·
 <code>{html.escape(str(card_b.get("card_sha256") or ""))}</code></p>
 </body></html>"""

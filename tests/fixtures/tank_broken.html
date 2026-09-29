@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tank</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#041f28}
+canvas{display:block}</style>
+</head>
+<body>
+<script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+<script>
+// Broken fixture — the demonstrated FAIL path: one drawn frame, then the
+// animation loop throws. The harness must catch the page error, see the
+// frozen tank, and score it into the ground.
+(function () {
+  var N = __TANK_N__;
+  var scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a3d4d);
+  var camera = new THREE.PerspectiveCamera(55, 960 / 540, 0.1, 100);
+  camera.position.set(0, 0.6, 11);
+  var renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(960, 540);
+  document.body.appendChild(renderer.domElement);
+  var geo = new THREE.ConeGeometry(0.22, 0.85, 6);
+  var mat = new THREE.MeshLambertMaterial({ color: 0xf2a33c });
+  var mesh = new THREE.InstancedMesh(geo, mat, N);
+  scene.add(mesh);
+  var frame = 0;
+  (function loop() {
+    requestAnimationFrame(loop);
+    frame += 1;
+    if (frame > 1) {
+      throw new Error("broken fixture: the tank died");
+    }
+    renderer.render(scene, camera);
+  })();
+})();
+</script>
+</body>
+</html>

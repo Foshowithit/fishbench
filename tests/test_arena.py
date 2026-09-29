@@ -182,12 +182,23 @@ class ArenaTests(_ServerCase):
 
     def test_wrong_spec_refused(self):
         card = offline_card(display_name="Time Traveler")
-        card["spec"] = "fishbench-2"
+        # a genuinely unknown spec is refused naming the arena's spec
+        card["spec"] = "fishbench-99"
         card = seal_card(card)
         r = self.post("/api/fishbench/arena", card)
         self.assertFalse(r["ok"])
         self.assertIn("fishbench-1", r["error"])
         self.assertEqual(self.rows(display_name="Time Traveler"), [])
+
+        # an fb-1 card wearing the fishbench-2 label is refused by the tank
+        # branch: its digests are not the frozen tank pack
+        card2 = offline_card(display_name="Tank Impostor")
+        card2["spec"] = "fishbench-2"
+        card2 = seal_card(card2)
+        r2 = self.post("/api/fishbench/arena", card2)
+        self.assertFalse(r2["ok"])
+        self.assertIn("tank", r2["error"])
+        self.assertEqual(self.rows(display_name="Tank Impostor"), [])
 
     def test_wrong_pack_digest_refused(self):
         card = offline_card(display_name="Pack Doctor")

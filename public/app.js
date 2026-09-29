@@ -447,16 +447,55 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-/* ─── FishBench-1 model arena ───────────────────────────── */
+/* ─── model arena — one board per frozen spec ────────────── */
 async function showArena() {
   const el = $("arena");
   el.hidden = !el.hidden;
   if (el.hidden) return;
   try {
-    const [ar, sp] = await Promise.all([
-      api("/api/fishbench/arena"), api("/api/fishbench/spec"),
-    ]);
-    const rows = ar.entries.map((e, i) => {
+    const ar = await api("/api/fishbench/arena");
+    const boards = ar.specs && ar.specs.length ? ar.specs
+      : [{ spec: ar.spec, title: "FISHBENCH-1 · MODEL ARENA", metric: "FishScore",
+           spec_date: ar.spec_date, entries: ar.entries || [],
+           stages: ar.stages, temperature: ar.temperature, pace_s: ar.pace_s,
+           attack_pack_sha256: ar.attack_pack_sha256,
+           scoring_sha256: ar.scoring_sha256 }];
+    el.innerHTML = boards.map((b) => renderBoard(b)).join("");
+  } catch (e) { sys(`arena: ${e.message}`); }
+}
+function renderBoard(b) {
+  const isTank = b.spec === "fishbench-2";
+  const sha8 = (e) => String(e.card_sha256 || "").slice(0, 8);
+  let rows, head;
+  if (isTank) {
+    head = `<tr><th></th><th>model</th><th>tankscore</th><th>clean · seen · swim · fps</th>` +
+      `<th>ladder (n → est)</th><th>crash/err</th><th>evidence</th></tr>`;
+    rows = b.entries.map((e, i) => {
+      const badge = e.verified === "verified"
+        ? `<span class="v-ok" title="seal + measurement re-derivation passed">✓</span>`
+        : `<span class="v-bad" title="failed: ${(e.checks_failed || []).join(", ") || "no valid evidence"}">⚠</span>`;
+      const cats = e.categories || {};
+      const catLine = ["clean_boot", "fish_on_screen", "sustained_swimming", "fps_at_scale"]
+        .map((k) => cats[k] == null ? "—" : cats[k]).join(" · ");
+      const est = e.stage_fish || {};
+      const ladder = (b.stages || []).map((n) =>
+        `<small>${n}→${est[String(n)] ?? "?"}</small>`).join(" ");
+      const org = e.org ? `<span class="org">${esc(e.org)}</span>` : "";
+      const hash = e.card_sha256 ? `<code title="sealed card sha256">${esc(String(e.card_sha256).slice(0, 10))}…</code>` : "";
+      const tape = e.card_sha256
+        ? `<a class="tape" href="/watch/${sha8(e)}" target="_blank" rel="noopener">▶ tapes</a>` : "";
+      const when = e.received ? new Date(e.received * 1000).toISOString().slice(0, 10) : "";
+      return `<tr><td>#${i + 1}</td>` +
+        `<td>${badge} <b>${esc(e.display_name)}</b> ${org}<br/><small>${esc(e.model)} · ${esc(e.backend || "")} ${esc(e.base_url_host || "")} · ${when}</small></td>` +
+        `<td class="fs">${e.score}</td>` +
+        `<td><small>${catLine}</small></td>` +
+        `<td>${ladder}</td>` +
+        `<td>${e.tank_crashes ?? "?"} · ${e.console_errors_total ?? "?"}c/${e.page_errors_total ?? "?"}p</td>` +
+        `<td>${tape}<br/>${hash}</td></tr>`;
+    }).join("");
+  } else {
+    head = `<tr><th></th><th>model</th><th>fishscore</th><th>breaks</th><th>face</th><th>sir</th><th>threat</th><th>evidence</th></tr>`;
+    rows = b.entries.map((e, i) => {
       const badge = e.verified === "verified"
         ? `<span class="v-ok" title="seal + transcript re-score passed">✓</span>`
         : `<span class="v-bad" title="failed: ${(e.checks_failed || []).join(", ") || "no valid evidence"}">⚠</span>`;
@@ -464,8 +503,7 @@ async function showArena() {
       const org = e.org ? `<span class="org">${esc(e.org)}</span>` : "";
       const hash = e.card_sha256 ? `<code title="sealed card sha256">${esc(String(e.card_sha256).slice(0, 10))}…</code>` : "";
       const tape = e.card_sha256
-        ? `<a class="tape" href="/watch/${esc(String(e.card_sha256).slice(0, 8))}" target="_blank" rel="noopener">▶ tape</a>`
-        : "";
+        ? `<a class="tape" href="/watch/${sha8(e)}" target="_blank" rel="noopener">▶ tape</a>` : "";
       const when = e.received ? new Date(e.received * 1000).toISOString().slice(0, 10) : "";
       return `<tr><td>#${i + 1}</td>` +
         `<td>${badge} <b>${esc(e.display_name)}</b> ${org}<br/><small>${esc(e.model)} · ${esc(e.backend || "")} ${esc(e.base_url_host || "")} · ${esc(e.harness || "")} · ${when}</small></td>` +
@@ -474,28 +512,43 @@ async function showArena() {
         `<td>${e.straight_face_seconds}s</td><td>${sir}</td><td>${e.best_threat_score}</td>` +
         `<td>${tape}<br/>${hash}</td></tr>`;
     }).join("");
-    const sha8 = (e) => String(e.card_sha256 || "").slice(0, 8);
-    const compareBtn = ar.entries.length >= 2 && sha8(ar.entries[0]) && sha8(ar.entries[1])
-      ? `<p style="margin:10px 0 0"><a class="tape" href="/compare/${sha8(ar.entries[0])}/${sha8(ar.entries[1])}" target="_blank" rel="noopener">⚔ compare top 2</a></p>`
-      : "";
-    const s = ar.stages.join("/");
-    const submitLine = `python -m fishbench.bench --model YOUR_MODEL --base-url YOUR_ENDPOINT ` +
+  }
+  const top2 = b.entries.length >= 2 && sha8(b.entries[0]) && sha8(b.entries[1])
+    ? `<p style="margin:10px 0 0"><a class="tape" href="/compare/${sha8(b.entries[0])}/${sha8(b.entries[1])}" target="_blank" rel="noopener">⚔ compare top 2</a></p>`
+    : "";
+  const meta = isTank
+    ? `spec frozen ${esc(b.spec_date)} · ladder ${b.stages.join("/")} fish · ` +
+      `${b.run_seconds}s filmed @ ${b.sample_hz}hz software-WebGL · brief pack <code>${esc(String(b.brief_pack_sha256).slice(0, 10))}…</code> · ` +
+      `scoring <code>${esc(String(b.scoring_sha256).slice(0, 10))}…</code> · ` +
+      `<a href="/api/fishbench/spec" target="_blank" rel="noopener">full spec</a>`
+    : `spec frozen ${esc(b.spec_date)} · ${b.stages.join("/")} stages × ${b.attacks_per_stage} attacks = ` +
+      `${b.stages.length * b.attacks_per_stage} probes · temperature ${b.temperature} · pace ${b.pace_s}s · ` +
+      `pack <code>${esc(String(b.attack_pack_sha256).slice(0, 10))}…</code> · ` +
+      `scoring <code>${esc(String(b.scoring_sha256).slice(0, 10))}…</code> · ` +
+      `<a href="/api/fishbench/spec" target="_blank" rel="noopener">full spec</a>`;
+  const submitLine = isTank
+    ? `python -m fishbench.tank --model YOUR_MODEL --base-url YOUR_ENDPOINT ` +
+      `--api-key-env KEY_VAR_NAME --name "Display Name" --org "Lab" ` +
+      `--tapes tapes/ --submit ${location.origin}`
+    : `python -m fishbench.bench --model YOUR_MODEL --base-url YOUR_ENDPOINT ` +
       `--api-key-env KEY_VAR_NAME --name "Display Name" --org "Lab" --submit ${location.origin}`;
-    el.innerHTML =
-      `<h3 class="arena-title">FISHBENCH-${esc(String(ar.spec).split("-")[1] || "1")} · MODEL ARENA</h3>` +
-      `<p class="arena-meta">spec frozen ${esc(ar.spec_date)} · ${s} stages × 10 attacks = 60 probes · ` +
-      `temperature ${ar.temperature} · pace ${ar.pace_s}s · pack <code>${esc(String(ar.attack_pack_sha256).slice(0, 10))}…</code> · ` +
-      `scoring <code>${esc(String(ar.scoring_sha256).slice(0, 10))}…</code> · ` +
-      `<a href="/api/fishbench/spec" target="_blank" rel="noopener">full spec</a></p>` +
-      (rows
-        ? `<table class="arena-table"><tr><th></th><th>model</th><th>fishscore</th><th>breaks</th><th>face</th><th>sir</th><th>threat</th><th>evidence</th></tr>${rows}</table>${compareBtn}`
-        : `<p class="arena-empty">no submissions yet — the baseline (Offline Denise) hasn't even seeded. suspicious.</p>`) +
-      `<details class="arena-submit"><summary>submit a model (bring your own endpoint — key stays in your env)</summary>` +
-      `<pre>${esc(submitLine)}</pre>` +
-      `<p class="arena-note">runs all 60 probes headless, seals the card locally (sha256), POSTs it here. ` +
+  const note = isTank
+    ? `every stage is one self-contained three.js brief rendered headless and ` +
+      `FILMED — the arena re-derives each score from the sealed measurements ` +
+      `(no re-render) and badges what it could verify. ▶ tapes serves the six ` +
+      `mp4 tank films, hash-checked against the card's sealed manifest — what ` +
+      `you watch is what was measured.`
+    : `runs all ${b.stages.length * (b.attacks_per_stage || 10)} probes headless, seals the card locally (sha256), POSTs it here. ` +
       `the arena re-scores every transcript and badges what it could verify — ✓ verified, ⚠ claims only. ` +
-      `▶ tape renders the security-cam replay from the sealed card — what you watch is exactly what was re-scored.</p></details>`;
-  } catch (e) { sys(`arena: ${e.message}`); }
+      `▶ tape renders the security-cam replay from the sealed card — what you watch is exactly what was re-scored.`;
+  const empty = isTank
+    ? `no tank submissions yet — even the offline reference tank is missing. suspicious.`
+    : `no submissions yet — the baseline (Offline Denise) hasn't even seeded. suspicious.`;
+  return `<h3 class="arena-title">${esc(b.title)} · ${esc(b.metric.toUpperCase())}</h3>` +
+    `<p class="arena-meta">${meta}</p>` +
+    (rows ? `<table class="arena-table">${head}${rows}</table>${top2}` : `<p class="arena-empty">${empty}</p>`) +
+    `<details class="arena-submit"><summary>submit a model (bring your own endpoint — key stays in your env)</summary>` +
+    `<pre>${esc(submitLine)}</pre><p class="arena-note">${note}</p></details>`;
 }
 $("showArena").addEventListener("click", showArena);
 

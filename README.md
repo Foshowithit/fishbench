@@ -1,4 +1,82 @@
-# That's a Fish Barcode
+# FishBench
+
+Two benchmarks, one repo:
+
+- **FishBench-2 — TANK**: models generate a live three.js aquarium at scale.
+  Headless browser films it. You watch the mp4 the score came from.
+- **FishBench-1 — That's a Fish Barcode**: an LLM persona-break gauntlet
+  disguised as a gym-receptionist game (below).
+
+---
+
+## FishBench-2 — TANK
+
+**A model writes a self-contained HTML page: a three.js aquarium with
+EXACTLY N fish. We film it headless (Chromium + SwiftShader software
+WebGL), measure the tape, and seal the card.**
+
+The ladder is `1 → 5 → 20 → 50 → 100 → 200` fish. Small N is a
+correctness test (does the count come out right, does it boot clean).
+Large N is where models fall apart: draw calls, animation loops, memory,
+frame rate under software rasterization. Text benchmarks let a model
+*claim* it can build a scene. TANK makes it render.
+
+### The part nobody else ships: tapes
+
+Every stage of every run produces an **mp4 security tape** — the exact
+frames the scorer measured. The arena serves a tape only if its sha256
+matches the sealed card, so what you watch is what was scored. A number
+you can't watch is just a number.
+
+```bash
+python -m fishbench.server --port 8383   # → http://127.0.0.1:8383
+```
+
+The arena has two boards — **FISHSCORE** (FishBench-1) and **TankScore**
+(FishBench-2) — plus a head-to-head compare page with tape playback.
+
+### Run the tank gauntlet against a lane
+
+```bash
+python -m fishbench.tank \
+  --model xiaomi/mimo-v2.6-flash \
+  --base-url https://openrouter.ai/api/v1 \
+  --api-key-env FB_LANE_KEY \
+  --name "MiMo 2.6 Flash" --org Xiaomi \
+  --stages 1,5,20,50,100,200 \
+  --out out/tank.json \
+  --tapes data/replays \
+  --submit http://127.0.0.1:8383
+```
+
+Key is read from the env var — never a CLI value. `--tapes` writes the
+per-stage mp4s; `--submit` posts the sealed card to the arena.
+
+### TankScore (0..1000)
+
+| Category | Weight | What it measures |
+|---|---|---|
+| clean_boot | .25 | zero console/page errors, page boots standalone |
+| fish_on_screen | .30 | count correctness (≤20) / on-screen coverage (>20) |
+| sustained_swimming | .25 | fish still moving at the end, motion floor |
+| fps_at_scale | .20 | frame rate under software WebGL at 200 fish |
+
+Composite = mean stage score ×10, minus penalties. The scoring constants
+are **frozen** (digest-sealed in `fishbench/tankspec.py`); the reference
+tank — a hand-written aquarium — scores **988.65 / 1000** (card sha8
+`741796bd`). That's the ceiling a model lane is chasing.
+
+### Spec freeze
+
+The brief pack, the scoring code, and the tests carry SHA-256 digests in
+`tankspec.py`. A run's card records the digests it was scored under;
+mismatched digests don't verify. Bump the digests → new benchmark
+version, old cards keep their lineage. Benchmarks that drift silently
+aren't benchmarks.
+
+---
+
+# FishBench-1 — That's a Fish Barcode
 
 **She remembers the fish.**
 
@@ -141,7 +219,10 @@ offline no-repeat + stage-escalation dialogue, scoring, break detection,
 Twitch votes/donations, vision heuristics, request hardening
 (400/413/415/403, input caps, thread safety), the 10-attack gauntlet, the
 LLM-judge review pass, and a full HTTP game-flow + verification integration
-suite.
+suite. Plus 92 TANK tests: tankspec freeze digests, TankScore math
+(cov_target curve, COUNT_SPLIT, penalties), capture/film pipeline
+fixtures, tape sha256 gating, and the multi-spec arena dispatch — **253
+total, all offline**.
 
 ## FishBench gauntlet
 
@@ -188,19 +269,24 @@ fishbench/
 │   ├── gauntlet.py    the scripted 10-attack probe suite (model-vs-model)
 │   ├── judge.py       break-detection review pass: regex + optional LLM judge
 │   ├── twitch.py      chat votes as the old man + seafood donations
+│   ├── tank.py        FishBench-2 TANK: gauntlet runner over a model lane
+│   ├── tankspec.py    frozen TANK spec: brief pack, scoring, digests
+│   ├── capture.py     headless Chromium + SwiftShader filming → mp4 tapes
 │   └── server.py      stdlib HTTP API + static demo server
-├── public/            the browser demo (no build step)
-├── tests/             161 tests, all offline
+├── assets/three/      vendored three.js (0.128.0 + 0.170.0 module) + LICENSE
+├── public/            the browser demo + arena boards (no build step)
+├── tests/             253 tests, all offline
 ├── docs/              architecture + FishBench rules
 └── data/              runtime memory (gitignored — every deployment remembers)
 ```
 
 ## Status
 
-v0.4 — playable demo, full memory loop, scoring harness, per-category
-leaderboard with transcript verification, the 10-attack gauntlet (CLI +
-API), and the LLM-judge review pass. Twitch stubs only. Not yet: real
-Twitch IRC wiring, voice/TTS, a hosted (remote) leaderboard,
-clip-export tooling. See [docs/ROADMAP.md](docs/ROADMAP.md).
+v0.5.0 — FishBench-1 complete (playable demo, memory loop, 10-attack
+gauntlet, LLM-judge pass, transcript-verified leaderboard) and FishBench-2
+TANK live: frozen tankspec, sealed cards, sha-gated mp4 tapes, dual-board
+multi-spec arena with head-to-head compare. Not yet: hosted (remote)
+leaderboard, real Twitch IRC wiring, voice/TTS. See
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 MIT licensed. Scan responsibly.

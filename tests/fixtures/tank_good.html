@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tank</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#041f28}
+canvas{display:block}</style>
+</head>
+<body>
+<script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+<script>
+// Reference tank — the calibration anchor. Meets the brief it tests:
+// exactly __TANK_N__ fish, instanced (2 draw calls — alive at 200),
+// swimming continuously, body + tail, no external assets but three.js.
+(function () {
+  var N = __TANK_N__;
+  var W = 960, H = 540;
+  var scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a3d4d);
+  scene.fog = new THREE.Fog(0x0a3d4d, 10, 26);
+
+  var camera = new THREE.PerspectiveCamera(55, W / H, 0.1, 100);
+  camera.position.set(0, 0.6, 11);
+  camera.lookAt(0, 0, 0);
+
+  var renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(W, H);
+  renderer.setPixelRatio(1);
+  document.body.appendChild(renderer.domElement);
+
+  scene.add(new THREE.AmbientLight(0xbfe8ef, 0.55));
+  var sun = new THREE.DirectionalLight(0xffffff, 0.9);
+  sun.position.set(4, 10, 7);
+  scene.add(sun);
+
+  // the glass box — static structure, no motion of its own
+  var tank = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(16, 8, 6)),
+    new THREE.LineBasicMaterial({ color: 0x2e7d8f }));
+  scene.add(tank);
+
+  // fish: body cone (+x) + tail cone (-x), flattened
+  var bodyGeo = new THREE.ConeGeometry(0.22, 0.85, 6);
+  bodyGeo.rotateZ(-Math.PI / 2);
+  var bodyMat = new THREE.MeshLambertMaterial({ color: 0xf2a33c });
+  var bodies = new THREE.InstancedMesh(bodyGeo, bodyMat, N);
+
+  var tailGeo = new THREE.ConeGeometry(0.16, 0.38, 4);
+  tailGeo.rotateZ(Math.PI / 2);
+  tailGeo.scale(1, 1, 0.35);
+  var tailMat = new THREE.MeshLambertMaterial({ color: 0xd7742b });
+  var tails = new THREE.InstancedMesh(tailGeo, tailMat, N);
+
+  var M = new THREE.Matrix4();
+  var Q = new THREE.Quaternion();
+  var S = new THREE.Vector3(1, 1, 1);
+  var P = new THREE.Vector3();
+  var E = new THREE.Euler();
+  var fish = [];
+  for (var i = 0; i < N; i++) {
+    fish.push({
+      x: -8 + 16 * Math.random(),
+      y: -3.4 + 6.8 * Math.random(),
+      z: -2.6 + 4.2 * Math.random(),
+      v: 0.45 + 0.75 * Math.random(),
+      ph: 6.283 * Math.random(),
+      sz: 0.75 + 0.5 * Math.random()
+    });
+  }
+  scene.add(bodies);
+  scene.add(tails);
+
+  function place(mesh, i, f, isTail, t) {
+    var x = f.x, y = f.y + 0.14 * Math.sin(t * 2 + f.ph);
+    var wag = isTail ? 0.5 * Math.sin(t * 7 + f.ph) : 0;
+    E.set(0.06 * Math.sin(t * 2 + f.ph), 0, wag);
+    Q.setFromEuler(E);
+    P.set(isTail ? x - 0.52 * f.sz : x, y, f.z);
+    S.set(f.sz, f.sz, f.sz);
+    M.compose(P, Q, S);
+    mesh.setMatrixAt(i, M);
+  }
+
+  var clock = new THREE.Clock();
+  (function loop() {
+    requestAnimationFrame(loop);
+    var t = clock.getElapsedTime();
+    for (var i = 0; i < N; i++) {
+      var f = fish[i];
+      f.x += f.v * 0.016;
+      if (f.x > 8.4) f.x = -8.4;
+      place(bodies, i, f, false, t);
+      place(tails, i, f, true, t);
+    }
+    bodies.instanceMatrix.needsUpdate = true;
+    tails.instanceMatrix.needsUpdate = true;
+    renderer.render(scene, camera);
+  })();
+})();
+</script>
+</body>
+</html>
