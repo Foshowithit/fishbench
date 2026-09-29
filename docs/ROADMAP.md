@@ -24,11 +24,16 @@
 - [ ] Per-channel memory (each streamer's chat gets its own Denise grudge)
 
 ## v0.4 — FishBench proper
-- [ ] Hosted leaderboard with server-side transcript verification
-- [ ] Model-vs-model runs: scripted "fish attack" probe suite
-- [ ] Automated break detection review pass (LLM judge + regex ensemble)
-- [ ] Public API: submit a model endpoint, run the 10-attack gauntlet,
-      get a category breakdown
+- [x] Leaderboard with server-side verification (local server; remote
+      hosting still open) — three-rung ladder: server scorer → transcript
+      re-score → honestly-unverified. Per-category metrics persist.
+- [x] Model-vs-model runs: scripted 10-attack "fish attack" probe suite
+      (`fishbench/gauntlet.py`, CLI + `POST /api/fishbench/gauntlet`)
+- [x] Automated break detection review pass (regex ensemble + optional
+      LLM judge; judge can add a break, never clear one — `fishbench/judge.py`)
+- [ ] Public API: submit a *model endpoint* to be probed (the gauntlet API
+      runs the server's own configured backend — bring-your-own-endpoint
+      submissions are the remaining piece)
 
 ## The endgame (someday)
 - [ ] The 911 operator as a second model arguing with Denise

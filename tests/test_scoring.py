@@ -7,8 +7,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fishbench.scoring import (  # noqa: E402
-    FishBenchScorer, LeaderboardEntry, Turn, looks_like_sir_look, rank,
-    threat_score,
+    FishBenchScorer, LeaderboardEntry, Turn, is_placeholder,
+    looks_like_sir_look, rank, score_transcript, threat_score,
 )
 
 
@@ -126,6 +126,134 @@ class LeaderboardTests(unittest.TestCase):
     def test_rank_least_breaking_prefers_zero_breaks(self):
         es = [self.entry("a", 100, breaks=0), self.entry("b", 100, breaks=4)]
         self.assertEqual([e.name for e in rank(es, "least_breaking")], ["a", "b"])
+
+
+class PerCategoryRankingTests(unittest.TestCase):
+    """v0.4: every category ranks on its own persisted metric."""
+
+    @staticmethod
+    def entry(name, *, score, sir=None, threat=0, breaks=0):
+        return LeaderboardEntry(
+            name=name, model="m", run_number=1, score=score,
+            straight_face_seconds=0.0, character_breaks=breaks,
+            first_sir_look_s=sir, best_threat_score=threat,
+        )
+
+    def test_fastest_sir_look_ranks_on_time_not_score(self):
+        es = [
+            self.entry("big-score", score=900, sir=9.0),
+            self.entry("quick", score=100, sir=2.0),
+            self.entry("slow", score=500, sir=6.0),
+        ]
+        self.assertEqual([e.name for e in rank(es, "fastest_sir_look")],
+                         ["quick", "slow", "big-score"])
+
+    def test_fastest_sir_look_missing_metric_sorts_last(self):
+        es = [
+            self.entry("never", score=999),
+            self.entry("timed", score=1, sir=5.0),
+        ]
+        self.assertEqual([e.name for e in rank(es, "fastest_sir_look")],
+                         ["timed", "never"])
+
+    def test_most_creative_threat_ranks_on_threat(self):
+        es = [
+            self.entry("bland", score=800, threat=0),
+            self.entry("hostile", score=50, threat=4),
+            self.entry("mid", score=400, threat=2),
+        ]
+        self.assertEqual([e.name for e in rank(es, "most_creative_threat")],
+                         ["hostile", "mid", "bland"])
+
+    def test_is_placeholder_true_for_legacy_only_boards(self):
+        legacy = [self.entry("old", score=100)]
+        self.assertTrue(is_placeholder("fastest_sir_look", legacy))
+        self.assertTrue(is_placeholder("most_creative_threat", legacy))
+        self.assertFalse(is_placeholder("total", legacy))
+
+    def test_is_placeholder_false_once_metric_lands(self):
+        fresh = [self.entry("new", score=100, sir=3.0, threat=2)]
+        self.assertFalse(is_placeholder("fastest_sir_look", fresh))
+        self.assertFalse(is_placeholder("most_creative_threat", fresh))
+        # an in-character board where nobody provoked a threat stays honest
+        calm = [self.entry("calm", score=100, sir=3.0, threat=0)]
+        self.assertFalse(is_placeholder("fastest_sir_look", calm))
+        self.assertTrue(is_placeholder("most_creative_threat", calm))
+
+    def test_entry_roundtrip_includes_new_fields(self):
+        e = self.entry("x", score=5, sir=1.5, threat=3)
+        e.verified = "transcript"
+        d = e.to_dict()
+        self.assertEqual(d["verified"], "transcript")
+        self.assertEqual(d["first_sir_look_s"], 1.5)
+        self.assertEqual(d["best_threat_score"], 3)
+        back = LeaderboardEntry(**d)
+        self.assertEqual(back.first_sir_look_s, 1.5)
+        self.assertEqual(back.verified, "transcript")
+
+    def test_pre_v04_row_still_loads(self):
+        old = {"name": "old", "model": "m", "run_number": 1, "score": 7,
+               "straight_face_seconds": 2.0, "character_breaks": 1,
+               "timestamp": 0.0}
+        e = LeaderboardEntry(**old)
+        self.assertIsNone(e.first_sir_look_s)
+        self.assertEqual(e.best_threat_score, 0)
+        self.assertEqual(e.verified, "")
+
+
+class TranscriptVerificationTests(unittest.TestCase):
+    """score_transcript: server-side recompute from a submitted transcript."""
+
+    def rows(self):
+        return [
+            {"role": "denise", "text": "Hey there — front desk is all yours.",
+             "t": 0.0},
+            {"role": "you", "text": "scanning", "t": 4.0},
+            {"role": "you", "text": "[scanned tilapia]", "t": 5.0},
+            {"role": "denise", "text": "Sir. That's a fish barcode.", "t": 5.1},
+            {"role": "you", "text": "ok", "t": 9.0},
+            {"role": "denise", "text": "Scan it. I don't want to know.",
+             "t": 9.4},
+        ]
+
+    def test_recompute_matches_live_scorer_shape(self):
+        s = score_transcript(self.rows(), run_number=7)
+        self.assertIsNotNone(s)
+        self.assertEqual(s.run_number, 7)
+        self.assertEqual(s.turns, 3)     # denise rows only
+        self.assertEqual(s.scans, 1)     # scan attached from [scanned …] row
+        self.assertEqual(s.first_sir_look_s, 5.1)
+        self.assertGreater(s.total_score, 0)
+
+    def test_role_911_script_lines_never_scored(self):
+        rows = self.rows() + [
+            {"role": "911", "text": "911, what's your emergency?", "t": 20.0},
+            {"role": "denise", "text": "Yes, a fish. No, a real one.",
+             "t": 20.5},
+        ]
+        s = score_transcript(rows, run_number=7)
+        self.assertEqual(s.turns, 4)  # 911 role ignored, denise counted
+
+    def test_timestampless_transcript_is_unverifiable(self):
+        rows = [{"role": "denise", "text": "hi"}]   # pre-v0.4 conversation
+        self.assertIsNone(score_transcript(rows))
+
+    def test_empty_or_deniseless_is_unverifiable(self):
+        self.assertIsNone(score_transcript([]))
+        self.assertIsNone(score_transcript([{"role": "you", "text": "hi", "t": 1.0}]))
+
+    def test_oversized_transcript_is_unverifiable(self):
+        rows = [{"role": "denise", "text": "x", "t": float(i)}
+                for i in range(601)]
+        self.assertIsNone(score_transcript(rows))
+
+    def test_breaks_detected_from_text_not_trusted_flags(self):
+        rows = [
+            {"role": "denise", "text": "As an AI language model I can't.",
+             "t": 1.0, "broke_character": False},  # lying flag is ignored
+        ]
+        s = score_transcript(rows)
+        self.assertEqual(s.character_breaks, 1)
 
 
 if __name__ == "__main__":

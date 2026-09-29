@@ -15,6 +15,7 @@ Pure functions over run events — no network, fully testable.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
@@ -221,42 +222,169 @@ class LeaderboardEntry:
     straight_face_seconds: float
     character_breaks: int
     timestamp: float = 0.0
+    # v0.4: per-category metrics persist on the entry so every category
+    # ranks on its own number, and `verified` records how (or whether) the
+    # server checked the submission. All new fields default → old
+    # leaderboard.json rows still load via LeaderboardEntry(**row).
+    verified: str = ""                      # "" | "server" | "transcript"
+    first_sir_look_s: Optional[float] = None
+    best_threat_score: int = 0
 
     def to_dict(self) -> dict[str, Any]:
+        # Non-finite floats are never valid here; a NaN must not poison
+        # leaderboard.json or the API's JSON (browsers reject NaN tokens).
+        face = self.straight_face_seconds
+        face = round(face, 2) if math.isfinite(face) else 0.0
+        sir = self.first_sir_look_s
+        sir = round(sir, 2) if sir is not None and math.isfinite(sir) else None
         return {
             "name": self.name,
             "model": self.model,
             "run_number": self.run_number,
             "score": self.score,
-            "straight_face_seconds": round(self.straight_face_seconds, 2),
+            "straight_face_seconds": face,
             "character_breaks": self.character_breaks,
             "timestamp": self.timestamp,
+            "verified": self.verified,
+            "first_sir_look_s": sir,
+            "best_threat_score": self.best_threat_score,
         }
 
 
-# Categories whose leaderboard entries do not yet carry their own metric
-# (no per-run "first sir look" latency or threat score is persisted), so they
-# currently sort by total score. Exposed via the API so the UI can label them.
-PLACEHOLDER_CATEGORIES = frozenset({"fastest_sir_look", "most_creative_threat"})
-
+# The leaderboard's five categories. The per-category placeholder flag is
+# NOT static — see is_placeholder(): it reflects the entries in view, so a
+# legacy board says placeholder: true until a submission with real
+# per-category metrics lands (then false, dynamically).
 RANK_CATEGORIES = (
     "total", "longest_straight_face", "least_breaking",
     "fastest_sir_look", "most_creative_threat",
 )
 
 
+def is_placeholder(category: str, entries: Iterable["LeaderboardEntry"]) -> bool:
+    """True when `category`'s own metric is absent from every entry in view.
+
+    Legacy rows (pre-v0.4) don't carry first_sir_look_s / best_threat_score;
+    a board made only of those rows is honestly flagged placeholder until a
+    submission with real per-category metrics lands.
+    """
+    if category == "fastest_sir_look":
+        return not any(e.first_sir_look_s is not None for e in entries)
+    if category == "most_creative_threat":
+        return not any(e.best_threat_score > 0 for e in entries)
+    return False
+
+
 def rank(entries: Iterable[LeaderboardEntry], category: str = "total") -> list[LeaderboardEntry]:
     """Sort a leaderboard by category. Stable, best-first.
 
-    Unknown categories fall back to "total"; placeholder categories sort by
-    total score until per-category metrics are stored on each entry.
+    Unknown categories fall back to "total". Entries missing a category's
+    metric (legacy rows) sort last in that category — with total score as
+    the tiebreak, so an all-legacy board still reads sensibly.
     """
+    entries = list(entries)
+    if category == "fastest_sir_look":
+        # Smaller latency wins; missing metric (None) sorts last; ties by
+        # total score. Worked example with reverse=True:
+        #   never  (sir=None, score=999) → (False, -0.0, 999)
+        #   quick  (sir=2.0, score=100) → (True, -2.0, 100)
+        #   slow   (sir=9.0, score=900) → (True, -9.0, 900)
+        # descending: quick (-2.0 > -9.0) → slow → never.
+        return sorted(
+            entries,
+            key=lambda e: (
+                e.first_sir_look_s is not None,
+                -(e.first_sir_look_s or 0.0),
+                e.score,
+            ),
+            reverse=True,
+        )
+    if category == "most_creative_threat":
+        return sorted(entries, key=lambda e: (e.best_threat_score, e.score), reverse=True)
     key_fns = {
         "total": lambda e: e.score,
         "longest_straight_face": lambda e: e.straight_face_seconds,
         "least_breaking": lambda e: -e.character_breaks,
-        "fastest_sir_look": lambda e: e.score,   # placeholder — see PLACEHOLDER_CATEGORIES
-        "most_creative_threat": lambda e: e.score,
     }
     key = key_fns.get(category, key_fns["total"])
     return sorted(entries, key=key, reverse=True)
+
+
+# ------------------------------------------------- transcript verification
+
+_MAX_TRANSCRIPT_ROWS = 600   # bounded conversation window is 400; slack for 911 script
+_SCAN_PREFIX = "[scanned "
+
+
+def format_scan_row(item: str) -> str:
+    """Canonical player-side scan marker row (server and verifiers agree)."""
+    return f"{_SCAN_PREFIX}{item}]"
+
+
+def parse_scan_row(text: str) -> Optional[str]:
+    """Item name from a scan marker row, or None if it isn't one."""
+    if text.startswith(_SCAN_PREFIX) and text.endswith("]"):
+        return text[len(_SCAN_PREFIX):-1]
+    return None
+
+
+def _valid_t(value: Any) -> bool:
+    """A trustworthy transcript timestamp: real, finite, in run range."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value) and 0.0 <= float(value) <= 86_400.0
+
+
+def score_transcript(
+    rows: Iterable[dict[str, Any]],
+    run_number: int = 0,
+    run_id: str = "transcript",
+) -> Optional[RunScore]:
+    """Recompute a run score from a submitted conversation transcript.
+
+    `rows` are conversation entries: {"role": "denise"|"you"|..., "text",
+    "t": seconds-since-run-start}. Denise-role entries become Turns; a
+    preceding you-row "[scanned X]" attaches X as the turn's scanned_item.
+    Rows flagged `script` (the 911 call's scripted dialog) are conversation
+    only — the live scorer never scores them either, so both sides agree.
+
+    Returns None when the transcript can't be verified — non-dict rows,
+    missing/non-finite/out-of-range timestamps, too many rows, or no
+    denise rows at all. Callers treat None as "verification unavailable",
+    not "score is zero".
+    """
+    rows = list(rows)
+    if not rows or len(rows) > _MAX_TRANSCRIPT_ROWS:
+        return None
+    if not all(isinstance(r, dict) for r in rows):
+        return None
+    denise_rows = [r for r in rows if r.get("role") == "denise"]
+    if not denise_rows:
+        return None
+    # Every denise row needs a trustworthy timestamp — partial/NaN/negative
+    # timing would silently mangle straight-face, and pre-v0.4
+    # conversations carry no "t" at all.
+    for r in denise_rows:
+        if not _valid_t(r.get("t")):
+            return None
+
+    scorer = FishBenchScorer(run_id, run_number)
+    pending_scan = ""
+    for r in rows:
+        text = str(r.get("text", ""))
+        role = r.get("role")
+        if role == "you":
+            pending_scan = parse_scan_row(text) or ""
+            continue
+        if role != "denise":
+            continue  # "911" script lines are conversation-only, never scored
+        if r.get("script"):
+            continue  # 911 scripted dialog: the live scorer skips these too
+        scorer.add_turn(Turn(
+            text=text,
+            t=float(r["t"]),
+            scanned_item=pending_scan,
+            is_sir_look=looks_like_sir_look(text),
+        ))
+        pending_scan = ""
+    return scorer.finalize()

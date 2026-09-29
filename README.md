@@ -130,11 +130,44 @@ via a vision model when `FISHBENCH_VISION_BASE_URL` is set.
 python -m unittest discover -s tests
 ```
 
-120 tests: memory canon & replay, persona stage boundaries (1/5/20/50/100/200),
+161 tests: memory canon & replay, persona stage boundaries (1/5/20/50/100/200),
 offline no-repeat + stage-escalation dialogue, scoring, break detection,
 Twitch votes/donations, vision heuristics, request hardening
-(400/413/415/403, input caps, thread safety), and a full HTTP game-flow
-integration suite.
+(400/413/415/403, input caps, thread safety), the 10-attack gauntlet, the
+LLM-judge review pass, and a full HTTP game-flow + verification integration
+suite.
+
+## FishBench gauntlet
+
+The scripted 10-attack probe suite — the same 10 attacks, in the same order,
+against an isolated memory, so the only variable is the model behind the
+receptionist. Score comes out of the ordinary scorer, so a gauntlet number is
+directly comparable to a played run.
+
+```bash
+python -m fishbench.gauntlet [--run 20] [--judge] [--json]   # exit 1 on any break
+```
+
+Or over HTTP: `POST /api/fishbench/gauntlet` `{run_number?, pace_s?, judge?}`.
+`--run N` probes the relationship stage at run N; `--judge` adds the
+LLM break-detection review pass (second opinion — it can add a break the
+regex missed, never clear one).
+
+## Leaderboard verification
+
+Submissions carry a `verified` label from a three-rung ladder — the first
+source wins and its numbers replace the claim:
+
+1. **server** — the submission's run matches this server's live run; the
+   server's own scorer is ground truth.
+2. **transcript** — a timestamped conversation transcript is re-scored from
+   scratch (`score_transcript`). Proves self-consistency with a plausible
+   transcript, not that this server observed the run.
+3. **unverified** — no evidence; accepted as v0.1 did, and labeled.
+
+Categories rank on their own persisted metrics (`first_sir_look_s`,
+`best_threat_score`); a category whose entries lack the metric is honestly
+flagged `placeholder` until real ones land.
 
 ## Repo layout
 
@@ -146,18 +179,22 @@ fishbench/
 │   ├── llm.py         offline + OpenAI-compatible HTTP backends, break detection
 │   ├── vision.py      scanner: local heuristic or vision model, never crashes
 │   ├── scoring.py     FishBench: straight face / Sir.Look. / threat / breaks
+│   ├── gauntlet.py    the scripted 10-attack probe suite (model-vs-model)
+│   ├── judge.py       break-detection review pass: regex + optional LLM judge
 │   ├── twitch.py      chat votes as the old man + seafood donations
 │   └── server.py      stdlib HTTP API + static demo server
 ├── public/            the browser demo (no build step)
-├── tests/             120 tests, all offline
+├── tests/             161 tests, all offline
 ├── docs/              architecture + FishBench rules
 └── data/              runtime memory (gitignored — every deployment remembers)
 ```
 
 ## Status
 
-v0.1 skeleton — playable demo, full memory loop, scoring harness, Twitch
-stubs. Not yet: real Twitch IRC wiring, voice/TTS, hosted leaderboard,
+v0.4 — playable demo, full memory loop, scoring harness, per-category
+leaderboard with transcript verification, the 10-attack gauntlet (CLI +
+API), and the LLM-judge review pass. Twitch stubs only. Not yet: real
+Twitch IRC wiring, voice/TTS, a hosted (remote) leaderboard,
 clip-export tooling. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 MIT licensed. Scan responsibly.

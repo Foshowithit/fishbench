@@ -414,8 +414,12 @@ $("submitScore").addEventListener("click", async () => {
       score: s.total_score,
       straight_face_seconds: s.straight_face_seconds,
       character_breaks: s.character_breaks,
+      first_sir_look_s: s.first_sir_look_s,
+      best_threat_score: s.best_threat_score,
+      transcript: state?.conversation || [],
     });
-    sys(`submitted — position #${r.position}`);
+    sys(`submitted — position #${r.position}` +
+        (r.verified ? ` (verified: ${r.verified})` : " (unverified)"));
     showLeaderboard();
   } catch (e) { sys(`submit failed: ${e.message}`); }
 });
@@ -428,7 +432,7 @@ async function showLeaderboard() {
     if (el.hidden) return;
     const rows = lb.entries.length
       ? lb.entries.map((e, i) =>
-          `<tr><td>#${i + 1}</td><td>${esc(e.name)}</td><td>${esc(e.model)}</td>` +
+          `<tr><td>#${i + 1}</td><td>${esc(e.name)}${e.verified ? " ✓" : ""}</td><td>${esc(e.model)}</td>` +
           `<td>${e.run_number}</td><td>${e.score}</td>` +
           `<td>${e.straight_face_seconds}s</td><td>${e.character_breaks}</td></tr>`).join("")
       : `<tr><td colspan="7">no runs yet — go make her say the line.</td></tr>`;

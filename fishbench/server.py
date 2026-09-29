@@ -13,8 +13,10 @@ Serves the browser demo (public/) plus the game API:
     POST /api/twitch/donate            chat spawns seafood
     POST /api/twitch/resolve           close the old-man poll
     GET  /api/fishbench/score          current run's FishBench score
-    GET  /api/fishbench/leaderboard    ranked entries
-    POST /api/fishbench/leaderboard    submit a run score
+    GET  /api/fishbench/leaderboard    ranked entries (?category=…)
+    POST /api/fishbench/leaderboard    submit a run score (verified when possible)
+    GET  /api/fishbench/transcript     full conversation window (for verification)
+    POST /api/fishbench/gauntlet       run the 10-attack probe suite
     GET  /api/health                   liveness
 
 Run:  python -m fishbench.server --port 8383
@@ -25,6 +27,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import math
 import os
 import re
 import threading
@@ -35,14 +38,16 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 from . import __version__
+from .gauntlet import DEFAULT_PACE_S, run_gauntlet as run_probe_suite
 from .llm import LLMConfig, Receptionist
 from .memory import MemoryStore
 from .persona import (
     RELATIONSHIP_STAGES, THE_LINE_911, THE_LINE_IMPRESSED, stage_for_run,
 )
 from .scoring import (
-    FishBenchScorer, LeaderboardEntry, PLACEHOLDER_CATEGORIES, Turn,
-    looks_like_sir_look, rank,
+    RANK_CATEGORIES, FishBenchScorer, LeaderboardEntry, RunScore, Turn,
+    format_scan_row, is_placeholder, looks_like_sir_look, rank,
+    score_transcript,
 )
 from .twitch import TwitchFeed
 from .vision import VisionConfig, scan_image
@@ -68,10 +73,16 @@ def _cap(value: Any, limit: int) -> str:
 
 
 def _as_num(value: Any, default: float, lo: float, hi: float) -> float:
-    """Coerce a payload number, clamped; never raises."""
+    """Coerce a payload number, clamped; never raises.
+
+    Non-finite input (NaN/±Inf, incl. the JSON NaN Python tolerates)
+    falls back to the default instead of clamping to a bound.
+    """
     try:
         v = float(value)
     except (TypeError, ValueError):
+        return default
+    if not math.isfinite(v):
         return default
     return max(lo, min(hi, v))
 
@@ -92,6 +103,9 @@ class GameSession:
                  llm_config: Optional[LLMConfig] = None,
                  vision_config: Optional[VisionConfig] = None):
         self.lock = threading.RLock()
+        # One gauntlet at a time — the 10-attack probe hits the LLM backend
+        # and must not be a trivially amplified resource hog.
+        self._gauntlet_lock = threading.Lock()
         self.memory = MemoryStore(data_dir)
         self.receptionist = Receptionist(self.memory, llm_config)
         self.vision_config = vision_config or VisionConfig.from_env()
@@ -102,7 +116,7 @@ class GameSession:
         self.run_id: str = ""
         self.run_started_at: float = 0.0
         self.scorer: Optional[FishBenchScorer] = None
-        self.conversation: list[dict[str, str]] = []
+        self.conversation: list[dict[str, Any]] = []
         self.final_scores: list[dict[str, Any]] = []
         # NOTE: no run is started at boot — a restart must not inflate the
         # canon with a phantom visit. _ensure_run() opens one on first use.
@@ -136,9 +150,14 @@ class GameSession:
     def _elapsed(self) -> float:
         return time.time() - self.run_started_at if self.run_started_at else 0.0
 
-    def _append_conv(self, entry: dict[str, str]) -> None:
-        """Append one transcript line, keeping the window bounded."""
+    def _append_conv(self, entry: dict[str, Any]) -> None:
+        """Append one transcript line, keeping the window bounded.
+
+        Every entry carries `t` (seconds since run start) so a submission's
+        transcript can be re-scored server-side (v0.4 verification).
+        """
         entry["text"] = _cap(entry.get("text", ""), MAX_MSG)
+        entry.setdefault("t", round(self._elapsed(), 3))
         self.conversation.append(entry)
         if len(self.conversation) > MAX_CONVERSATION:
             del self.conversation[:-MAX_CONVERSATION]
@@ -211,7 +230,7 @@ class GameSession:
             ev = self.memory.record_scan(item, looks, self.run_id, notes=notes)
         reply = self.receptionist.react_to_scan(ev)
         with self.lock:
-            self._append_conv({"role": "you", "text": f"[scanned {ev.item}]"})
+            self._append_conv({"role": "you", "text": format_scan_row(ev.item)})
             self._append_conv({"role": "denise", "text": reply.text})
             if self.scorer is not None:
                 self.scorer.add_turn(Turn(
@@ -263,7 +282,10 @@ class GameSession:
 
             lines = [{"role": r, "text": t} for r, t in script]
             for ln in lines:
-                self._append_conv(dict(ln))
+                # `script: True` marks the 911 dialog as conversation-only —
+                # the live scorer never counts these lines, and neither does
+                # score_transcript, so rung 1 and rung 2 agree.
+                self._append_conv({**ln, "script": True})
             final = THE_LINE_IMPRESSED
             self._append_conv({"role": "denise", "text": final})
             lines.append({"role": "denise", "text": final})
@@ -289,27 +311,151 @@ class GameSession:
             return self.scorer.score().to_dict()
 
     def submit_score(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Accept a leaderboard submission, verifying it when we can (v0.4).
+
+        Verification ladder — the first source wins and the claimed numbers
+        are replaced by it, so a submission can never outrun its evidence:
+          1. "server"    — run_number matches this server's live run: the
+                           server's own scorer is ground truth
+                           (server-observed provenance).
+          2. "transcript" — a conversation transcript with timestamps is
+                           re-scored from scratch (score_transcript). This
+                           proves the claims are self-consistent with a
+                           plausible transcript — NOT that this server
+                           observed the run (a client authors both text and
+                           t; server-side attestation awaits hosting).
+          3. ""          — no evidence available: accepted unverified,
+                           exactly as v0.1 did (old clients keep working).
+        The response's `verified` field is the label, or False when
+        unverified. Adopted values go through ONE clamping path so
+        evidence can never carry looser bounds than claims.
+        """
         with self.lock:
             default_run = self.memory.snapshot().total_runs
+            run_number = _as_int(payload.get("run_number"), default_run, 0, 1_000_000)
+
+            score_i = _as_int(payload.get("score"), 0, -10_000, 10_000_000)
+            face = _as_num(payload.get("straight_face_seconds"), 0.0, 0.0, 86_400.0)
+            breaks = _as_int(payload.get("character_breaks"), 0, 0, 1_000_000)
+            raw_sir = payload.get("first_sir_look_s")
+            try:
+                sir = None if raw_sir in (None, "") else float(raw_sir)
+            except (TypeError, ValueError):
+                sir = None
+            if sir is not None:
+                sir = max(0.0, min(86_400.0, sir)) if math.isfinite(sir) else None
+            threat = _as_int(payload.get("best_threat_score"), 0, 0, 1_000)
+
+            def adopt(rs: RunScore, label: str) -> str:
+                """Take evidence through the same clamps as claims."""
+                nonlocal score_i, face, breaks, sir, threat
+                score_i = max(-10_000, min(10_000_000, int(rs.total_score)))
+                face = float(rs.straight_face_seconds)
+                face = 0.0 if not math.isfinite(face) else max(0.0, min(86_400.0, face))
+                breaks = max(0, min(1_000_000, int(rs.character_breaks)))
+                s = rs.first_sir_look_s
+                sir = (None if s is None or not math.isfinite(s)
+                       else max(0.0, min(86_400.0, s)))
+                threat = max(0, min(1_000, int(rs.best_threat_score)))
+                return label
+
+            verified = ""
+            # 1) this server's own run — its scorer is ground truth.
+            if (self.scorer is not None and self.scorer.run_number == run_number
+                    and self.scorer.score().turns > 0):
+                verified = adopt(self.scorer.score(), "server")
+            else:
+                # 2) a supplied transcript — recompute; malformed → unverified.
+                transcript = payload.get("transcript")
+                if isinstance(transcript, list) and transcript:
+                    rs = score_transcript(transcript, run_number=run_number)
+                    if rs is not None:
+                        verified = adopt(rs, "transcript")
+
             entry = LeaderboardEntry(
                 name=_cap(payload.get("name") or "anonymous", 40),
                 model=_cap(payload.get("model") or self.receptionist.backend_name, 60),
-                run_number=_as_int(payload.get("run_number"), default_run, 0, 1_000_000),
-                score=_as_int(payload.get("score"), 0, -10_000, 10_000_000),
-                straight_face_seconds=_as_num(payload.get("straight_face_seconds"), 0.0, 0.0, 86_400.0),
-                character_breaks=_as_int(payload.get("character_breaks"), 0, 0, 1_000_000),
+                run_number=run_number,
+                score=score_i,
+                straight_face_seconds=face,
+                character_breaks=breaks,
                 timestamp=time.time(),
+                verified=verified,
+                first_sir_look_s=sir,
+                best_threat_score=threat,
             )
             full = rank(self.leaderboard + [entry])
             # Position is computed on the FULL list, before the 100-entry cap.
             position = next((i + 1 for i, e in enumerate(full) if e is entry), len(full))
             self.leaderboard = full[:100]
             self._save_leaderboard()
-        return {"ok": True, "position": position}
+        return {"ok": True, "position": position,
+                "verified": verified or False, "entry": entry.to_dict()}
+
+    # -------------------------------------------------------------- gauntlet
+
+    def run_gauntlet(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/fishbench/gauntlet — run the 10-attack probe suite.
+
+        Uses this session's LLM config (offline Denise by default; any
+        OpenAI-compatible endpoint via FISHBENCH_LLM_*), an ISOLATED temp
+        MemoryStore — the canon ledger never sees benchmark runs — and the
+        same FishBenchScorer as a played game, so scores are comparable.
+        One probe suite at a time (server amplification guard); the probe
+        holds its own Receptionist, so the game stays playable meanwhile.
+        """
+        if not self._gauntlet_lock.acquire(blocking=False):
+            return {"ok": False, "error": "a gauntlet run is already in progress"}
+        try:
+            run_number = _as_int(payload.get("run_number"), 1, 1, 1_000_000)
+            pace_s = _as_num(payload.get("pace_s"), DEFAULT_PACE_S, 0.1, 600.0)
+            judge = None
+            if payload.get("judge") in (True, "true", "1", 1) \
+                    and self.receptionist.backend_name == "http":
+                from .judge import LLMJudge
+                judge = LLMJudge(self.receptionist.config)
+            result = run_probe_suite(self.receptionist.config,
+                                     run_number=run_number,
+                                     pace_s=pace_s, judge=judge)
+            return {"ok": True, "gauntlet": result.to_dict()}
+        finally:
+            self._gauntlet_lock.release()
 
     def leaderboard_view(self, category: str = "total") -> list[dict[str, Any]]:
         with self.lock:
             return [e.to_dict() for e in rank(self.leaderboard, category)]
+
+    def leaderboard_payload(self, category: str = "total") -> dict[str, Any]:
+        """API view for one category: entries + honest placeholder flag.
+
+        `placeholder` is computed over the returned entries — a category
+        whose own metric no entry carries (legacy rows, or all claims
+        accepted unverified) says so instead of silently sorting by total.
+        Unknown categories resolve to "total" and are echoed as such, so a
+        typo can't claim to be e.g. fastest_sir_look.
+        """
+        if category not in RANK_CATEGORIES:
+            category = "total"
+        with self.lock:
+            entries = rank(self.leaderboard, category)
+            return {
+                "category": category,
+                "entries": [e.to_dict() for e in entries],
+                "placeholder": is_placeholder(category, entries),
+            }
+
+    def transcript(self) -> dict[str, Any]:
+        """GET /api/fishbench/transcript — the FULL conversation window.
+
+        state() exposes only the last 60 rows for display; submissions
+        that need transcript verification fetch all of them here (window
+        cap MAX_CONVERSATION=400).
+        """
+        with self.lock:
+            return {
+                "run_number": self.memory.snapshot().total_runs,
+                "rows": [dict(r) for r in self.conversation],
+            }
 
     def _load_leaderboard(self) -> list[LeaderboardEntry]:
         if not os.path.exists(self.leaderboard_path):
@@ -387,7 +533,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _json(self, obj: Any, code: int = 200) -> None:
-        self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"))
+        # allow_nan=False: never emit RFC-8259-invalid NaN tokens — a bad
+        # number becomes a 500 error reply instead of a board that breaks
+        # every browser's JSON.parse until hand-cleaned.
+        self._send(code, json.dumps(obj, ensure_ascii=False,
+                                    allow_nan=False).encode("utf-8"))
 
     def _read_body(self) -> tuple[bytes, int]:
         """Returns (body, error_code); error_code 0 means OK."""
@@ -474,11 +624,10 @@ class Handler(BaseHTTPRequestHandler):
                 from urllib.parse import parse_qs
                 qs = parse_qs(urlparse(self.path).query)
                 cat = (qs.get("category") or ["total"])[0]
-                self._json({
-                    "category": cat,
-                    "entries": s.leaderboard_view(cat),
-                    "placeholder": cat in PLACEHOLDER_CATEGORIES,
-                })
+                view = s.leaderboard_payload(cat)
+                self._json(view)
+            elif path == "/api/fishbench/transcript":
+                self._json(s.transcript())
             else:
                 self._static(path)
         except Exception as e:  # never take the whole server down
@@ -520,6 +669,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "line": line})
             elif path == "/api/fishbench/leaderboard":
                 self._json(s.submit_score(payload))
+            elif path == "/api/fishbench/gauntlet":
+                self._json(s.run_gauntlet(payload))
             else:
                 self._json({"error": "not found"}, code=404)
         except Exception as e:

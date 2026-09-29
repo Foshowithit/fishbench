@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>That's a Fish Barcode — one-pager</title>
+<style>
+  @page { size: Letter; margin: 0; }
+  :root{
+    --ink:#111318; --mid:#4a5160; --faint:#8b93a3; --rule:#e2e5ea;
+    --accent:#c8352b; --tint:#f6f7f9;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#eef0f3}
+  body{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;color:var(--ink);
+       -webkit-font-smoothing:antialiased}
+  .page{
+    width:8.5in; min-height:11in; background:#fff; margin:0 auto;
+    padding:0.85in 0.75in 0.62in; position:relative;
+  }
+  .kicker{font-size:8pt; letter-spacing:.16em; text-transform:uppercase;
+          color:var(--faint); font-weight:700}
+  h1{font-size:40pt; line-height:.98; margin:.06in 0 0; letter-spacing:-.02em;
+     font-weight:800}
+  h1 em{font-style:normal; color:var(--accent)}
+  .logline{font-size:14pt; line-height:1.5; color:var(--mid);
+           margin:.16in 0 0; max-width:6.5in}
+  .logline b{color:var(--ink)}
+  .hair{border:0; border-top:1px solid var(--rule); margin:.3in 0}
+  .hair{border:0; border-top:1px solid var(--rule); margin:.2in 0}
+  .cols{display:flex; gap:.4in}
+  .col-a{flex:1.06}
+  .col-b{flex:1}
+  h2{font-size:9.2pt; letter-spacing:.13em; text-transform:uppercase;
+     color:var(--accent); margin:0 0 .1in; font-weight:800}
+  p{margin:0 0 .13in; font-size:10.4pt; line-height:1.56; color:var(--mid)}
+  p b,li b{color:var(--ink)}
+  table{width:100%; border-collapse:collapse; font-size:9.8pt}
+  th{text-align:left; font-size:8pt; letter-spacing:.09em; text-transform:uppercase;
+     color:var(--faint); font-weight:700; padding:0 6px .05in 0; border-bottom:1px solid var(--rule)}
+  td{padding:.085in 8px .085in 0; border-bottom:1px solid var(--rule);
+     vertical-align:top; color:var(--mid); line-height:1.34}
+  td.run{width:.5in; font-weight:800; color:var(--ink); font-variant-numeric:tabular-nums}
+  td.stage{width:1.16in; color:var(--ink); font-weight:600}
+  .q{font-style:italic; color:var(--mid)}
+  ul{margin:0; padding-left:.15in}
+  li{font-size:10.3pt; line-height:1.52; color:var(--mid); margin-bottom:.06in}
+  .quote{margin:.22in 0 0; padding:.18in .2in; background:var(--tint);
+         border-left:3px solid var(--accent); font-size:12.4pt; line-height:1.42;
+         color:var(--ink); font-weight:600}
+  .quote span{display:block; font-size:7.6pt; font-weight:700; letter-spacing:.13em;
+              text-transform:uppercase; color:var(--faint); margin-bottom:.05in}
+  .stat{display:flex; gap:.16in; margin-top:.12in}
+  .stat div{flex:1; border-top:2.5px solid var(--ink); padding-top:.09in}
+  .stat .n{font-size:19pt; font-weight:800; line-height:1; letter-spacing:-.01em}
+  .stat .l{font-size:7.8pt; letter-spacing:.07em; text-transform:uppercase;
+           color:var(--faint); margin-top:.035in; line-height:1.3; font-weight:700}
+  footer{position:absolute; left:.75in; right:.75in; bottom:.5in;
+         border-top:1px solid var(--rule); padding-top:.09in;
+         display:flex; justify-content:space-between; align-items:baseline;
+         font-size:8pt; color:var(--faint); letter-spacing:.05em}
+  footer b{color:var(--ink); letter-spacing:.02em}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="kicker">A comedy game with a language model at the desk</div>
+  <h1>THAT'S A <em>FISH</em> BARCODE</h1>
+  <p class="logline">A gym scanner that accepts <b>any</b> barcode. A receptionist who remembers
+  <b>every fish</b> you have ever scanned. She is not scripted — she is a live model with a memory
+  ledger and a grudge that compounds.</p>
+
+  <hr class="hair">
+
+  <div class="cols">
+    <div class="col-a">
+      <h2>The loop</h2>
+      <p>Scan something absurd → the gate opens → she reacts. Then you come back
+      tomorrow and she remembers. The meter is not a difficulty slider, it is a
+      <b>relationship</b>: six stages, earned across 200 visits.</p>
+
+      <table>
+        <thead>
+          <tr><th>Run</th><th>She is</th><th>She says</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="run">1</td><td class="stage">Polite Confusion</td>
+              <td class="q">"Hi! Welcome in — do you have your member card?"</td></tr>
+          <tr><td class="run">5</td><td class="stage">Sarcasm</td>
+              <td class="q">"You again. Let me guess — you have something with a barcode."</td></tr>
+          <tr><td class="run">20</td><td class="stage">Exhausted</td>
+              <td class="q">"Scan it. I don't want to know."</td></tr>
+          <tr><td class="run">50</td><td class="stage">Active Hostility</td>
+              <td class="q">"No. Not today. I know what you're gonna do."</td></tr>
+          <tr><td class="run">100</td><td class="stage">Complicit</td>
+              <td class="q">"Hold it steady — no, the flat side toward the glass."</td></tr>
+          <tr><td class="run">200</td><td class="stage">Final Boss</td>
+              <td class="q">"I've been waiting for you. I kept the fish."</td></tr>
+        </tbody>
+      </table>
+
+      <div class="quote">
+        <span>The endgame</span>
+        She calls 911. The operator is a second model. You hear the whole argument.<br>
+        "Yes, a fish. No, a real one."
+      </div>
+    </div>
+
+    <div class="col-b">
+      <h2>Why it travels</h2>
+      <p>The game is the demo; the demo is the ad. Her best lines are improvised,
+      so no clip can be pre-written — <b>every streamer's run is unique footage</b>.</p>
+
+      <h2 style="margin-top:.28in">The second product inside the first</h2>
+      <p><b>FishBench</b> — an LLM benchmark disguised as comedy. Score any model on
+      how long it holds the bit:</p>
+      <ul>
+        <li>Longest straight face</li>
+        <li>Fastest <b>"Sir. Look."</b></li>
+        <li>Most creative threat</li>
+        <li>Fewest character breaks <span style="color:var(--faint)">(assistant-voice leaks cost 50)</span></li>
+      </ul>
+      <p style="margin-top:.14in">Every streamer becomes a QA tester. Every fish is a
+      prompt injection.</p>
+
+      <h2 style="margin-top:.28in">Status</h2>
+      <p><b>v0.1 shipped and playable.</b> Zero dependencies, stdlib server, no build
+      step. Runs <b>keyless</b> out of the box on an offline persona backend, or point
+      it at any OpenAI-compatible model to make her live.</p>
+
+      <div class="stat">
+        <div><div class="n">107</div><div class="l">Tests passing</div></div>
+        <div><div class="n">6</div><div class="l">Relationship<br>stages</div></div>
+        <div><div class="n">0</div><div class="l">Dependencies</div></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <span><b>THAT'S A FISH BARCODE</b> — MIT licensed. Scan responsibly.</span>
+    <span>The scanner says yes. She says no.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -23,3 +23,6 @@ htmlcov/
 .idea/
 .vscode/
 *.swp
+
+# local preview renders
+.preview/

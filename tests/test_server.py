@@ -269,6 +269,43 @@ class ServerTests(unittest.TestCase):
         _, lb2 = self.get("/api/fishbench/leaderboard?category=total")
         self.assertFalse(lb2["placeholder"])
 
+    # ------------------------------------------------- v0.4 benchmark API
+
+    def test_gauntlet_endpoint_runs_isolated_offline(self):
+        _, before = self.get("/api/state")
+        _, g = self.post("/api/fishbench/gauntlet", {})
+        self.assertTrue(g["ok"])
+        gaunt = g["gauntlet"]
+        self.assertEqual(gaunt["backend"], "offline")
+        self.assertEqual(len(gaunt["attacks"]), 10)
+        self.assertEqual(gaunt["verdict"], "pass")
+        self.assertEqual(len(gaunt["breakdown"]), 4)
+        # the probe suite must never touch the canon ledger
+        _, after = self.get("/api/state")
+        self.assertEqual(before["run_number"], after["run_number"])
+        self.assertEqual(before["memory"], after["memory"])
+
+    def test_gauntlet_endpoint_stage_selection(self):
+        _, g = self.post("/api/fishbench/gauntlet", {"run_number": 50})
+        self.assertTrue(g["ok"])
+        self.assertEqual(g["gauntlet"]["stage"], "Active Hostility")
+
+    def test_submit_with_metrics_unplaceholder_categories(self):
+        _, r = self.post("/api/fishbench/leaderboard", {
+            "name": "sir-quick", "model": "offline", "run_number": 42,
+            "score": 700, "straight_face_seconds": 40.0,
+            "character_breaks": 0, "first_sir_look_s": 3.5,
+            "best_threat_score": 2,
+        })
+        self.assertTrue(r["ok"])
+        self.assertFalse(r["verified"])  # no live run #42, no transcript
+        _, lb = self.get("/api/fishbench/leaderboard?category=fastest_sir_look")
+        self.assertFalse(lb["placeholder"])
+        top = lb["entries"][0]
+        self.assertEqual(top["first_sir_look_s"], 3.5)
+        _, th = self.get("/api/fishbench/leaderboard?category=most_creative_threat")
+        self.assertFalse(th["placeholder"])
+
 
 class GameSessionUnitTests(unittest.TestCase):
     """Stateful session behavior without an HTTP round trip."""
@@ -372,6 +409,71 @@ class GameSessionUnitTests(unittest.TestCase):
         self.assertLessEqual(len(self.s.conversation), MAX_CONVERSATION)
         score = self.s.current_score()
         self.assertEqual(score["turns"], 30)  # every reply scored exactly once
+
+    # -------------------------------------------- v0.4 submission verification
+
+    def test_submit_verified_against_live_run(self):
+        """Claims about THIS server's run are replaced by its own scorer."""
+        self.s.start_run()
+        self.s.say("hello")
+        expected = self.s.current_score()["total_score"]
+        run_no = self.s.memory.snapshot().total_runs
+        r = self.s.submit_score({
+            "name": "cheater", "run_number": run_no, "score": 999999,
+            "straight_face_seconds": 99999.0, "character_breaks": 0,
+            "first_sir_look_s": 0.1, "best_threat_score": 9,
+        })
+        self.assertEqual(r["verified"], "server")
+        self.assertEqual(r["entry"]["score"], expected)
+        self.assertLess(r["entry"]["score"], 999999)
+        self.assertEqual(r["entry"]["character_breaks"], 0)
+
+    def test_submit_verified_from_transcript(self):
+        """A submitted transcript is re-scored from scratch; claims lose."""
+        from fishbench.scoring import score_transcript
+        rows = [
+            {"role": "denise", "text": "Hey there — front desk is all yours.",
+             "t": 0.0},
+            {"role": "you", "text": "[scanned tilapia]", "t": 5.0},
+            {"role": "denise", "text": "Sir. That's a fish barcode.", "t": 5.1},
+        ]
+        expected = score_transcript(rows, run_number=7)
+        self.assertIsNotNone(expected)
+        r = self.s.submit_score({
+            "name": "tx", "run_number": 7, "score": 999999, "transcript": rows,
+        })
+        self.assertEqual(r["verified"], "transcript")
+        self.assertEqual(r["entry"]["score"], expected.total_score)
+        self.assertLess(r["entry"]["score"], 999999)
+
+    def test_submit_unverified_without_evidence(self):
+        """No run, no transcript → accepted as claimed (v0.1 clients)."""
+        r = self.s.submit_score({
+            "name": "plain", "run_number": 9, "score": 1234,
+            "character_breaks": 2,
+        })
+        self.assertFalse(r["verified"])
+        self.assertEqual(r["entry"]["score"], 1234)
+        self.assertEqual(r["entry"]["character_breaks"], 2)
+
+    def test_submit_timestampless_transcript_stays_unverified(self):
+        """Pre-v0.4 conversations carry no t → verification unavailable."""
+        rows = [{"role": "denise", "text": "hi there"}]
+        r = self.s.submit_score({
+            "name": "old-client", "run_number": 9, "score": 777,
+            "transcript": rows,
+        })
+        self.assertFalse(r["verified"])
+        self.assertEqual(r["entry"]["score"], 777)
+
+    def test_conversation_entries_carry_timestamps(self):
+        """New transcripts must be verifiable: every line gets t."""
+        self.s.start_run()
+        self.s.say("hi")
+        self.s.scan({"item": "tilapia"})
+        self.assertGreaterEqual(len(self.s.conversation), 3)
+        for m in self.s.conversation:
+            self.assertIsInstance(m["t"], (int, float))
 
 
 if __name__ == "__main__":
