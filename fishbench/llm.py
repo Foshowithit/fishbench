@@ -40,6 +40,10 @@ class LLMConfig:
     model: str = "deepseek-v4.1-flash"  # DEEPSEEK FLOOR: never pre-4.1
     timeout: float = 30.0
     temperature: float = 0.9
+    # Extra request headers for providers that demand more than a bearer
+    # token (e.g. opencode-go requires x-opencode-session). Values here are
+    # endpoint routing ids, not secrets — keys still live only in api_key.
+    extra_headers: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls, env: Optional[dict[str, str]] = None) -> "LLMConfig":
@@ -50,11 +54,22 @@ class LLMConfig:
         backend = (e.get("FISHBENCH_LLM_BACKEND") or "").strip().lower()
         if not backend:
             backend = "http" if base_url else "offline"
+        extra_headers: dict[str, str] = {}
+        raw_headers = (e.get("FISHBENCH_LLM_HEADERS") or "").strip()
+        if raw_headers:
+            try:
+                parsed = json.loads(raw_headers)
+                if isinstance(parsed, dict):
+                    extra_headers = {str(k): str(v)
+                                     for k, v in parsed.items()}
+            except ValueError:
+                pass  # not JSON — bench --header flags are the structured path
         return cls(
             backend=backend if backend in ("offline", "http") else "offline",
             base_url=base_url.rstrip("/"),
             api_key=api_key,
             model=model,
+            extra_headers=extra_headers,
         )
 
 
@@ -267,6 +282,7 @@ class HTTPBackend:
             headers={
                 "Content-Type": "application/json",
                 **({"Authorization": f"Bearer {self.config.api_key}"} if self.config.api_key else {}),
+                **self.config.extra_headers,
             },
             method="POST",
         )

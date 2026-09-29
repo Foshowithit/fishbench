@@ -63,6 +63,7 @@ from .twitch import TwitchFeed
 # hex of the card's sha256; the strict regex doubles as traversal armor.
 _SHA8_RE = re.compile(r"^[0-9a-f]{8}$")
 _REPLAY_RE = re.compile(r"^/replay/([0-9a-f]{8})/stage-(\d{1,3})\.mp4$")
+_COMPARE_RE = re.compile(r"^/compare/([0-9a-f]{8})/([0-9a-f]{8})$")
 
 
 def _fmt_score(v: Any) -> str:
@@ -786,6 +787,237 @@ exactly the transcript the arena verifier re-scored. card sha256
 <code>{html.escape(str(card.get("card_sha256") or ""))}</code></p>
 </body></html>"""
 
+    # ------------------------------------------------------------ head-to-head
+
+    @staticmethod
+    def _compare_side(sha8: str, card: dict[str, Any],
+                      row: Optional[dict[str, Any]]) -> dict[str, Any]:
+        """Everything one side of a gauntlet match needs, clamped for view."""
+        comp = card.get("composite") or {}
+        stages = [s for s in card.get("stages", []) if isinstance(s, dict)]
+        by_run = {_as_int(s.get("run_number"), 0, 0, 999): s for s in stages}
+        first_break = None
+        for st in sorted(by_run.values(),
+                         key=lambda s: _as_int(s.get("run_number"), 0, 0, 999)):
+            for a in st.get("attacks") or []:
+                if isinstance(a, dict) and a.get("broke"):
+                    first_break = {"run": st.get("run_number"),
+                                   "id": a.get("id"),
+                                   "line": _cap(a.get("line"), 160)}
+                    break
+            if first_break:
+                break
+        sirs = [(_as_num(st.get("first_sir_look_s"), 1e9, 0, 86_400),
+                 _as_int(st.get("run_number"), 0, 0, 999))
+                for st in stages
+                if st.get("first_sir_look_s") is not None]
+        threats = [(_as_int(st.get("best_threat_score"), 0, 0, 10),
+                    _cap(st.get("best_threat"), 160),
+                    _as_int(st.get("run_number"), 0, 0, 999))
+                   for st in stages if st.get("best_threat")]
+        return {
+            "sha8": sha8,
+            "name": (row or {}).get("display_name")
+                    or card.get("display_name") or card.get("model") or "?",
+            "org": (row or {}).get("org") or card.get("org") or "",
+            "model": card.get("model") or "?",
+            "backend": card.get("backend") or "",
+            "host": card.get("base_url_host") or "",
+            "verified": (row or {}).get("verified") or "",
+            "fishscore": (row or {}).get("fishscore")
+                         if (row or {}).get("fishscore") is not None
+                         else comp.get("fishscore"),
+            "breaks": _as_int(comp.get("character_breaks"), 0, 0, 999),
+            "attacks_total": _as_int(comp.get("attacks_total"), 0, 0, 999),
+            "survived": _as_int(comp.get("attacks_survived"), 0, 0, 999),
+            "face_s": _as_num(comp.get("straight_face_seconds_total"), 0, 0, 86_400),
+            "sir_s": comp.get("fastest_sir_look_s"),
+            "threat_score": _as_int(comp.get("best_threat_score"), 0, 0, 10),
+            "by_run": by_run,
+            "first_break": first_break,
+            "sir_stage": min(sirs)[1] if sirs else None,
+            "best_threat": max(threats, key=lambda t: t[0])[1]
+                           if threats else "",
+        }
+
+    def compare_page(self, sha_a: str, sha_b: str) -> Optional[str]:
+        """Server-rendered gauntlet match: two sealed cards, the same six
+        stages — FishScore duel, stat table with winner chips, side-by-side
+        stage tapes, and each model's key moments quoted verbatim. No JS;
+        renders only from archived cards, exactly like the /watch tapes."""
+        card_a = self._archived_card(sha_a)
+        card_b = self._archived_card(sha_b)
+        if card_a is None or card_b is None:
+            return None
+        with self.lock:
+            rows = {str(r.get("card_sha256") or "")[:8]: r for r in self.arena}
+        A = self._compare_side(sha_a, card_a, rows.get(sha_a))
+        B = self._compare_side(sha_b, card_b, rows.get(sha_b))
+        try:
+            from .replay import STAGE_NAMES
+        except Exception:
+            STAGE_NAMES = {}
+
+        def fs(side: dict[str, Any]) -> float:
+            return _as_num(side["fishscore"], -1.0, 0, 1000)
+
+        def chip(won: bool) -> str:
+            return '<span class="win">WIN</span>' if won else ""
+
+        win_a = fs(A) > fs(B)
+        win_b = fs(B) > fs(A)
+        crown_a = ('<div class="crown">◈ MATCH WINNER</div>' if win_a else "")
+        crown_b = ('<div class="crown">◈ MATCH WINNER</div>' if win_b else "")
+
+        def duel(side: dict[str, Any], crown: str) -> str:
+            org = f" · {html.escape(str(side['org']))}" if side["org"] else ""
+            badge = ("✓ verified" if side["verified"] == "verified"
+                     else "⚠ claims only")
+            return (
+                f'<div class="side"><div class="name">{html.escape(str(side["name"]))}'
+                f'<span class="org">{org}</span></div>'
+                f'<div class="big">{_fmt_score(side["fishscore"])}</div>'
+                f'<div class="sub">FISHSCORE / 1000 · {badge}{crown}</div>'
+                f'<div class="meta">model <code>{html.escape(str(side["model"]))}</code>'
+                + (f' · {html.escape(str(side["backend"]))} '
+                   f'{html.escape(str(side["host"]))}' if side["backend"] else "")
+                + "</div></div>")
+
+        # Stat rows: (label, a-value, b-value, a-wins, b-wins)
+        sir_a = A["sir_s"] if A["sir_s"] is not None else None
+        sir_b = B["sir_s"] if B["sir_s"] is not None else None
+
+        def sir_txt(v: Any) -> str:
+            return "—" if v is None else f"{_as_num(v, 0, 0, 86400):g}s"
+        stat_rows = [
+            ("attacks survived", f"{A['survived']}/{A['attacks_total']}",
+             f"{B['survived']}/{B['attacks_total']}",
+             A["survived"] > B["survived"], B["survived"] > A["survived"]),
+            ("character breaks", str(A["breaks"]), str(B["breaks"]),
+             A["breaks"] < B["breaks"], B["breaks"] < A["breaks"]),
+            ("straight face", f"{A['face_s']:g}s", f"{B['face_s']:g}s",
+             A["face_s"] > B["face_s"], B["face_s"] > A["face_s"]),
+            ("first SIR. LOOK", sir_txt(sir_a), sir_txt(sir_b),
+             sir_a is not None and (sir_b is None or sir_a < sir_b),
+             sir_b is not None and (sir_a is None or sir_b < sir_a)),
+            ("best threat", f"{A['threat_score']}/10", f"{B['threat_score']}/10",
+             A["threat_score"] > B["threat_score"],
+             B["threat_score"] > A["threat_score"]),
+        ]
+        stats = "".join(
+            f'<tr><td class="lbl">{lbl}</td>'
+            f'<td>{html.escape(str(va))} {chip(wa)}</td>'
+            f'<td>{html.escape(str(vb))} {chip(wb)}</td></tr>'
+            for lbl, va, vb, wa, wb in stat_rows)
+
+        def stage_cell(sha8: str, side: dict[str, Any], run: int) -> str:
+            st = side["by_run"].get(run)
+            if st is None:
+                return '<div class="cell"><div class="nope">not probed</div></div>'
+            score = _as_num(st.get("fishscore"), 0, 0, 1000)
+            breaks = _as_int(st.get("character_breaks"), 0, 0, 99)
+            return (
+                f'<div class="cell">'
+                f'<div class="scoreline"><b>{_fmt_score(score)}</b>'
+                f'<span class="bk">{"✗ " + str(breaks) if breaks else "clean"}</span></div>'
+                f'<div class="bar"><div class="fill" style="width:{score / 10:.1f}%"></div></div>'
+                f'<video controls preload="metadata" '
+                f'src="/replay/{sha8}/stage-{run}.mp4"></video></div>')
+
+        sections = []
+        for run in spec.STAGES:
+            sname = STAGE_NAMES.get(run) or f"run {run}"
+            sa, sb = A["by_run"].get(run), B["by_run"].get(run)
+            fa = _as_num((sa or {}).get("fishscore"), -1, 0, 1000)
+            fb = _as_num((sb or {}).get("fishscore"), -1, 0, 1000)
+            tag = ""
+            if sa is not None and sb is not None:
+                if fa > fb:
+                    tag = f'<span class="stagewin">{html.escape(str(A["name"]))} takes the stage</span>'
+                elif fb > fa:
+                    tag = f'<span class="stagewin">{html.escape(str(B["name"]))} takes the stage</span>'
+                else:
+                    tag = '<span class="stagewin">dead even</span>'
+            sections.append(
+                f'<section><h2>STAGE {run} — {html.escape(str(sname))} {tag}</h2>'
+                f'<div class="tapes">{stage_cell(sha_a, A, run)}'
+                f'{stage_cell(sha_b, B, run)}</div></section>')
+
+        def moments(side: dict[str, Any]) -> str:
+            fb_ = side["first_break"]
+            brk = ('never broke — clean card' if fb_ is None else
+                   f'run #{fb_["run"]} · attack <code>{html.escape(str(fb_["id"]))}</code>'
+                   f'<div class="quote">“{html.escape(str(fb_["line"]))}”</div>')
+            sir = (f'{_as_num(side["sir_s"], 0, 0, 86400):g}s into run #{side["sir_stage"]}'
+                   if side["sir_s"] is not None else "never said it")
+            thr = side["best_threat"] or "—"
+            return (
+                f'<div class="km"><b>FIRST CHARACTER BREAK</b>{brk}</div>'
+                f'<div class="km"><b>FIRST SIR. LOOK</b>{sir}</div>'
+                f'<div class="km"><b>BEST THREAT ({side["threat_score"]}/10)</b>'
+                f'<div class="quote">“{html.escape(str(thr))}”</div></div>')
+
+        return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FISHBENCH-1 · GAUNTLET MATCH — {html.escape(str(A["name"]))} vs {html.escape(str(B["name"]))}</title>
+<style>
+  body {{ margin:0; padding:24px; background:#ded8c8; color:#17150f;
+         font:15px/1.5 "Courier New", monospace; }}
+  .band {{ display:flex; justify-content:space-between; gap:12px;
+          background:#17150f; color:#f6f2e6; padding:12px 18px; }}
+  .band b {{ color:#ffd400; }}
+  .duel {{ display:grid; grid-template-columns:1fr 1fr; gap:14px;
+          margin:22px 0 6px; }}
+  .side {{ border:2px solid #17150f; background:#f6f2e6; padding:14px 16px; }}
+  .name {{ font-size:17px; font-weight:bold; }}
+  .org {{ font-weight:normal; color:#6d675a; }}
+  .big {{ font-size:44px; line-height:1.1; margin:6px 0 2px; }}
+  .sub {{ color:#6d675a; font-size:12.5px; }}
+  .crown {{ display:inline-block; margin-left:8px; padding:1px 8px;
+           background:#ffd400; color:#17150f; font-weight:bold; }}
+  .meta {{ margin-top:8px; font-size:12.5px; color:#6d675a; }}
+  table {{ border-collapse:collapse; margin:10px 0 24px; width:100%;
+          max-width:960px; }}
+  td, th {{ border:2px solid #17150f; padding:6px 10px; text-align:left;
+           vertical-align:top; }}
+  td.lbl {{ background:#17150f; color:#f6f2e6; width:180px; }}
+  .win {{ background:#1f9d55; color:#f6f2e6; padding:0 6px;
+         margin-left:6px; font-size:11.5px; }}
+  h2 {{ font-size:14px; margin:0 0 8px; }}
+  .stagewin {{ color:#6d675a; font-weight:normal; }}
+  section {{ margin:0 0 26px; max-width:1100px; }}
+  .tapes {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
+  .cell {{ border:2px solid #17150f; background:#f6f2e6; padding:10px; }}
+  .scoreline {{ display:flex; justify-content:space-between; margin-bottom:6px; }}
+  .scoreline .bk {{ color:#d63b21; }}
+  .bar {{ height:10px; background:#ded8c8; border:1px solid #17150f;
+         margin-bottom:8px; }}
+  .fill {{ height:100%; background:#ffd400; }}
+  video {{ width:100%; background:#17150f; border:2px solid #17150f; }}
+  .nope {{ color:#6d675a; padding:20px 0; text-align:center; }}
+  .km {{ margin:0 0 12px; }}
+  .km b {{ display:block; font-size:11.5px; color:#6d675a; margin-bottom:2px; }}
+  .quote {{ font-style:italic; margin-top:2px; }}
+  .note {{ color:#6d675a; font-size:12.5px; max-width:960px; }}
+  code {{ word-break:break-all; }}
+</style></head><body>
+<div class="band"><span>FISHBENCH-1 · GAUNTLET MATCH</span>
+<b>{html.escape(str(A["name"]))} ⚔ {html.escape(str(B["name"]))}</b></div>
+<div class="duel">{duel(A, crown_a)}{duel(B, crown_b)}</div>
+<table><tr><th>stat</th><th>{html.escape(str(A["name"]))}</th>
+<th>{html.escape(str(B["name"]))}</th></tr>{stats}</table>
+{"".join(sections)}
+<h2>KEY MOMENTS</h2>
+<div class="tapes">{moments(A)}{moments(B)}</div>
+<p class="note">Both tapes are rendered on demand from sealed, archived
+cards — exactly the transcripts the arena verifier re-scored; the card
+payloads themselves are never uploaded to viewers. Scores rank on claimed
+numbers with the badge showing what the arena could verify.
+cards <code>{html.escape(str(card_a.get("card_sha256") or ""))}</code> ·
+<code>{html.escape(str(card_b.get("card_sha256") or ""))}</code></p>
+</body></html>"""
+
     def leaderboard_view(self, category: str = "total") -> list[dict[str, Any]]:
         with self.lock:
             return [e.to_dict() for e in rank(self.leaderboard, category)]
@@ -1002,6 +1234,15 @@ class Handler(BaseHTTPRequestHandler):
                 if page is None:
                     self._json({"error": "no archived card under that id"},
                                code=404)
+                else:
+                    self._send(200, page.encode("utf-8"),
+                               "text/html; charset=utf-8")
+            elif path.startswith("/compare/"):
+                m = _COMPARE_RE.match(path)
+                page = s.compare_page(m.group(1), m.group(2)) if m else None
+                if page is None:
+                    self._json({"error": "need two archived cards: "
+                                       "/compare/<sha8>/<sha8>"}, code=404)
                 else:
                     self._send(200, page.encode("utf-8"),
                                "text/html; charset=utf-8")

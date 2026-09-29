@@ -312,6 +312,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="virtual seconds between attacks (default 5)")
     ap.add_argument("--timeout", type=float, default=30.0,
                     help="per-request LLM timeout seconds (default 30)")
+    ap.add_argument("--header", action="append", default=[], metavar="NAME=VALUE",
+                    help="extra request header for the LLM endpoint, repeatable "
+                         "(e.g. --header x-opencode-session=fishbench-1) — "
+                         "for providers that require routing headers")
     ap.add_argument("--out", default="",
                     help="write the sealed card JSON here")
     ap.add_argument("--replay", default="",
@@ -336,10 +340,20 @@ def main(argv: Optional[list[str]] = None) -> int:
                   file=sys.stderr)
             return 2
 
+    extra_headers: dict[str, str] = {}
+    for raw in args.header:
+        name, sep, value = raw.partition("=")
+        if not sep or not name.strip():
+            print(f"fishbench: bad --header {raw!r} (want NAME=VALUE)",
+                  file=sys.stderr)
+            return 2
+        extra_headers[name.strip()] = value.strip()
+
     if args.base_url:
         config = LLMConfig(backend="http", base_url=args.base_url.rstrip("/"),
                            api_key=api_key, model=args.model,
-                           timeout=args.timeout)
+                           timeout=args.timeout,
+                           extra_headers=extra_headers)
     else:
         config = LLMConfig(backend="offline")
 

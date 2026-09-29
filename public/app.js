@@ -474,6 +474,10 @@ async function showArena() {
         `<td>${e.straight_face_seconds}s</td><td>${sir}</td><td>${e.best_threat_score}</td>` +
         `<td>${tape}<br/>${hash}</td></tr>`;
     }).join("");
+    const sha8 = (e) => String(e.card_sha256 || "").slice(0, 8);
+    const compareBtn = ar.entries.length >= 2 && sha8(ar.entries[0]) && sha8(ar.entries[1])
+      ? `<p style="margin:10px 0 0"><a class="tape" href="/compare/${sha8(ar.entries[0])}/${sha8(ar.entries[1])}" target="_blank" rel="noopener">⚔ compare top 2</a></p>`
+      : "";
     const s = ar.stages.join("/");
     const submitLine = `python -m fishbench.bench --model YOUR_MODEL --base-url YOUR_ENDPOINT ` +
       `--api-key-env KEY_VAR_NAME --name "Display Name" --org "Lab" --submit ${location.origin}`;
@@ -484,7 +488,7 @@ async function showArena() {
       `scoring <code>${esc(String(ar.scoring_sha256).slice(0, 10))}…</code> · ` +
       `<a href="/api/fishbench/spec" target="_blank" rel="noopener">full spec</a></p>` +
       (rows
-        ? `<table class="arena-table"><tr><th></th><th>model</th><th>fishscore</th><th>breaks</th><th>face</th><th>sir</th><th>threat</th><th>evidence</th></tr>${rows}</table>`
+        ? `<table class="arena-table"><tr><th></th><th>model</th><th>fishscore</th><th>breaks</th><th>face</th><th>sir</th><th>threat</th><th>evidence</th></tr>${rows}</table>${compareBtn}`
         : `<p class="arena-empty">no submissions yet — the baseline (Offline Denise) hasn't even seeded. suspicious.</p>`) +
       `<details class="arena-submit"><summary>submit a model (bring your own endpoint — key stays in your env)</summary>` +
       `<pre>${esc(submitLine)}</pre>` +
