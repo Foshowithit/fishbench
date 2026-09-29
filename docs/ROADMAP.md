@@ -31,9 +31,23 @@
       (`fishbench/gauntlet.py`, CLI + `POST /api/fishbench/gauntlet`)
 - [x] Automated break detection review pass (regex ensemble + optional
       LLM judge; judge can add a break, never clear one — `fishbench/judge.py`)
-- [ ] Public API: submit a *model endpoint* to be probed (the gauntlet API
-      runs the server's own configured backend — bring-your-own-endpoint
-      submissions are the remaining piece)
+- [x] Public API: bring-your-own-endpoint submissions — **v0.5 FishBench-1**:
+      frozen spec (`fishbench/spec.py` + `docs/SPEC.md`), headless runner
+      with sealed sha256 result cards (`fishbench/bench.py` CLI), model
+      arena with verification badges (`GET/POST /api/fishbench/arena`),
+      machine-readable spec endpoint (`GET /api/fishbench/spec`)
+
+## v0.5 — FishBench-1 arena (shipped)
+- [x] Frozen spec `fishbench-1` (2026-09-28): schedule, pack, scoring all
+      hashed; versioning policy — any change ⇒ fishbench-2
+- [x] Headless submission CLI: 60 probes, sealed card, `--api-key-env`
+      indirection, offline baseline mode
+- [x] Card verification: digest gates, seal recompute, per-stage
+      transcript re-score; ✓/⚠ badge, rank-on-claims
+- [x] Model arena UI (MODEL ARENA button) + offline Denise seeded baseline
+- [ ] Hosted attestation: the arena itself replays probes against a
+      submitted endpoint and marks rows `attested` (SPEC.md §5/§8)
+- [ ] Remote hosting of a public arena instance
 
 ## The endgame (someday)
 - [ ] The 911 operator as a second model arguing with Denise

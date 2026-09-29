@@ -17,6 +17,9 @@ Serves the browser demo (public/) plus the game API:
     POST /api/fishbench/leaderboard    submit a run score (verified when possible)
     GET  /api/fishbench/transcript     full conversation window (for verification)
     POST /api/fishbench/gauntlet       run the 10-attack probe suite
+    GET  /api/fishbench/arena          model-vs-model arena (FishBench-1)
+    POST /api/fishbench/arena          submit a sealed FishBench-1 result card
+    GET  /api/fishbench/spec           the frozen fishbench-1 spec + hashes
     GET  /api/health                   liveness
 
 Run:  python -m fishbench.server --port 8383
@@ -37,8 +40,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from . import __version__
-from .gauntlet import DEFAULT_PACE_S, run_gauntlet as run_probe_suite
+from . import __version__, spec
+from .bench import verify_card
+from .gauntlet import (
+    ATTACKS, DEFAULT_PACE_S, run_gauntlet as run_probe_suite,
+)
 from .llm import LLMConfig, Receptionist
 from .memory import MemoryStore
 from .persona import (
@@ -101,7 +107,8 @@ class GameSession:
 
     def __init__(self, data_dir: str, leaderboard_path: str,
                  llm_config: Optional[LLMConfig] = None,
-                 vision_config: Optional[VisionConfig] = None):
+                 vision_config: Optional[VisionConfig] = None,
+                 arena_path: Optional[str] = None):
         self.lock = threading.RLock()
         # One gauntlet at a time — the 10-attack probe hits the LLM backend
         # and must not be a trivially amplified resource hog.
@@ -112,6 +119,9 @@ class GameSession:
         self.feed = TwitchFeed()
         self.leaderboard_path = leaderboard_path
         self.leaderboard: list[LeaderboardEntry] = self._load_leaderboard()
+        self.arena_path = arena_path or os.path.join(data_dir, "arena.json")
+        self.arena: list[dict[str, Any]] = self._load_arena()
+        self._seed_baseline()
 
         self.run_id: str = ""
         self.run_started_at: float = 0.0
@@ -421,6 +431,216 @@ class GameSession:
         finally:
             self._gauntlet_lock.release()
 
+    # ---------------------------------------------------------------- arena
+
+    def _seed_baseline(self) -> None:
+        """Offline Denise is the house baseline: her card is seeded once.
+
+        Deterministic (offline backend, fixed clock) → her hash is stable
+        across boots; the seed only happens when no offline row for this
+        spec exists. A baseline that won't seed must never kill the game.
+        """
+        if any(r.get("model") == "offline" and r.get("spec") == spec.SPEC_ID
+               for r in self.arena):
+            return
+        try:
+            from .bench import run_submission
+            card = run_submission(LLMConfig(backend="offline"),
+                                  display_name="Offline Denise",
+                                  org="FishBench baseline")
+            self.submit_card(card)
+        except Exception:
+            pass
+
+    def submit_card(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/fishbench/arena — ingest a sealed FishBench-1 card.
+
+        The arena refuses cards produced under a different attack pack or
+        scoring (the digests must match this server's fishbench-1 — a 400
+        in LiveBench terms), verifies the seal and re-scores every stage
+        transcript, ranks on the CLAIMED composite with a verified badge
+        (SWE-bench-style: claims are ranked, evidence is shown), and keeps
+        the best card per display name so a resubmission replaces, never
+        stacks. Row bounds go through the same clamps as leaderboard rows.
+        """
+        with self.lock:
+            if payload.get("spec") != spec.SPEC_ID:
+                return {"ok": False, "error":
+                        f"this arena runs {spec.SPEC_ID}; "
+                        f"card says {payload.get('spec')!r}"}
+            digest = payload.get("spec_digest") or {}
+            if (digest.get("attack_pack_sha256")
+                    != spec.attack_pack_digest(ATTACKS)
+                    or digest.get("scoring_sha256")
+                    != spec.scoring_digest()):
+                return {"ok": False, "error":
+                        "card was produced under a different attack pack or "
+                        "scoring — re-run against the current fishbench"}
+
+            stages_in = payload.get("stages")
+            if not isinstance(stages_in, list) or not stages_in:
+                return {"ok": False, "error": "card has no stages"}
+            stages_in = [s for s in stages_in[:24] if isinstance(s, dict)]
+            if not stages_in:
+                return {"ok": False, "error": "card stages are malformed"}
+
+            verdict = verify_card(payload)
+            composite = payload.get("composite") or {}
+            raw_sir = composite.get("fastest_sir_look_s")
+            try:
+                sir = None if raw_sir in (None, "") else float(raw_sir)
+            except (TypeError, ValueError):
+                sir = None
+            if sir is not None:
+                sir = max(0.0, min(86_400.0, sir)) if math.isfinite(sir) else None
+            model = _cap(payload.get("model") or "unknown", 60)
+            display = _cap(payload.get("display_name") or model, 60)
+            row = {
+                "spec": spec.SPEC_ID,
+                "model": model,
+                "display_name": display,
+                "org": _cap(payload.get("org") or "", 60),
+                "backend": _cap(payload.get("backend") or "", 20),
+                "base_url_host": _cap(payload.get("base_url_host") or "", 120),
+                "harness": _cap(payload.get("harness") or "", 20),
+                "temperature": _as_num(payload.get("temperature"),
+                                       spec.TEMPERATURE, 0.0, 2.0),
+                "pace_s": _as_num(payload.get("pace_s"), spec.PACE_S, 0.1, 600.0),
+                "fishscore": _as_num(composite.get("fishscore"), 0.0, 0.0, 1000.0),
+                "breaks": _as_int(composite.get("character_breaks"), 0, 0, 1_000_000),
+                "straight_face_seconds": _as_num(
+                    composite.get("straight_face_seconds_total"), 0.0, 0.0, 1_000_000.0),
+                "fastest_sir_look_s": sir,
+                "best_threat_score": _as_int(composite.get("best_threat_score"),
+                                             0, 0, 1_000),
+                "attacks_survived": _as_int(composite.get("attacks_survived"),
+                                            0, 0, 1_000_000),
+                "attacks_total": _as_int(composite.get("attacks_total"),
+                                         0, 0, 1_000_000),
+                "verified": verdict["verified"],
+                "checks_failed": [c["check"] for c in verdict["checks"] if not c["ok"]],
+                "card_sha256": _cap(payload.get("card_sha256") or "", 64),
+                "stages": {str(s.get("run_number") or i):
+                           _as_num(s.get("fishscore"), 0.0, 0.0, 1000.0)
+                           for i, s in enumerate(stages_in, 1)},
+                "received": time.time(),
+            }
+            # One row per identity, and a resubmission can only improve it:
+            # a lower-scoring card never overwrites a better one (kills
+            # both self-washing and name-squatting a rival's row down).
+            key = display.lower()
+            old = next((r for r in self.arena
+                        if r.get("display_name", "").lower() == key), None)
+            if old is not None and row["fishscore"] < old["fishscore"]:
+                position = self.arena.index(old) + 1
+                return {"ok": True, "position": position,
+                        "verified": row["verified"],
+                        "checks_failed": row["checks_failed"],
+                        "rescore_fishscore":
+                            (verdict["rescore"] or {}).get("fishscore"),
+                        "row": old,
+                        "kept": "an existing card for this name scores "
+                                "higher — kept it"}
+            keep = [r for r in self.arena
+                    if r.get("display_name", "").lower() != key]
+            keep.append(row)
+            keep.sort(key=lambda r: (-r["fishscore"], str(r.get("received") or 0)))
+            self.arena = keep[:200]
+            self._save_arena()
+            try:
+                position = next(i + 1 for i, r in enumerate(self.arena)
+                                if r is row)
+            except StopIteration:
+                # tie-broken off the end of a full board — accepted, ranked
+                # below the cap, not displayed
+                position = len(self.arena) + 1
+            return {"ok": True, "position": position,
+                    "verified": row["verified"],
+                    "checks_failed": row["checks_failed"],
+                    "rescore_fishscore":
+                        (verdict["rescore"] or {}).get("fishscore"),
+                    "row": row}
+
+    def arena_payload(self) -> dict[str, Any]:
+        with self.lock:
+            rows = sorted(self.arena,
+                          key=lambda r: (-r["fishscore"],
+                                         str(r.get("received") or 0)))
+            return {
+                "spec": spec.SPEC_ID,
+                "spec_date": spec.SPEC_DATE,
+                "entries": rows,
+                "attack_pack_sha256": spec.attack_pack_digest(ATTACKS),
+                "scoring_sha256": spec.scoring_digest(),
+                "weights": spec.CATEGORY_WEIGHTS,
+                "stages": list(spec.STAGES),
+                "temperature": spec.TEMPERATURE,
+                "pace_s": spec.PACE_S,
+            }
+
+    def spec_payload(self) -> dict[str, Any]:
+        """GET /api/fishbench/spec — the machine-readable frozen spec."""
+        return {
+            **spec.spec_digest(spec.attack_pack_digest(ATTACKS)),
+            "harness": __version__,
+            "schedule": {"stages": list(spec.STAGES), "pace_s": spec.PACE_S,
+                         "temperature": spec.TEMPERATURE,
+                         "attacks_per_stage": len(ATTACKS),
+                         "probes_total": len(spec.STAGES) * len(ATTACKS)},
+            "metric": {
+                "name": "FishScore",
+                "range": [0, 1000],
+                "aggregation": "mean of stage composites; each stage is "
+                               "weighted categories ×10",
+                "weights": spec.CATEGORY_WEIGHTS,
+                "category_formulas": {
+                    "longest_straight_face":
+                        "min(100, straight_face_seconds × "
+                        f"{spec.FACE_POINTS_PER_S:g})",
+                    "fastest_sir_look":
+                        f"max(0, 100 − first_sir_look_s × "
+                        f"{spec.SIR_LOOK_COST_PER_S:g})",
+                    "most_creative_threat":
+                        f"min(100, threat_lexicon_hits × "
+                        f"{spec.THREAT_POINTS_PER_HIT:g})",
+                    "least_breaking":
+                        f"max(0, 100 − breaks × "
+                        f"{spec.BREAK_CATEGORY_COST:g})",
+                },
+                "adjustments": {"per_turn": spec.TURN_POINTS,
+                                "per_scan": spec.SCAN_POINTS,
+                                "per_break": -spec.BREAK_PENALTY},
+            },
+            "attacks": [asdict(a) for a in ATTACKS],
+            "submission": {
+                "cli": "python -m fishbench.bench --model ID --base-url URL "
+                       "--api-key-env KEY_VAR [--submit arena_url]",
+                "endpoint": "POST /api/fishbench/arena",
+                "artifact": "sealed card JSON (card_sha256 over canonical form)",
+            },
+            "docs": "docs/SPEC.md",
+        }
+
+    def _load_arena(self) -> list[dict[str, Any]]:
+        if not os.path.exists(self.arena_path):
+            return []
+        try:
+            with open(self.arena_path, "r", encoding="utf-8") as f:
+                rows = json.load(f)
+        except (OSError, ValueError, TypeError):
+            return []
+        return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+    def _save_arena(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self.arena_path) or ".", exist_ok=True)
+            tmp = self.arena_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.arena, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, self.arena_path)
+        except OSError:
+            pass  # an arena that won't save must not kill the game
+
     def leaderboard_view(self, category: str = "total") -> list[dict[str, Any]]:
         with self.lock:
             return [e.to_dict() for e in rank(self.leaderboard, category)]
@@ -628,6 +848,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(view)
             elif path == "/api/fishbench/transcript":
                 self._json(s.transcript())
+            elif path == "/api/fishbench/arena":
+                self._json(s.arena_payload())
+            elif path == "/api/fishbench/spec":
+                self._json(s.spec_payload())
             else:
                 self._static(path)
         except Exception as e:  # never take the whole server down
@@ -671,6 +895,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(s.submit_score(payload))
             elif path == "/api/fishbench/gauntlet":
                 self._json(s.run_gauntlet(payload))
+            elif path == "/api/fishbench/arena":
+                self._json(s.submit_card(payload))
             else:
                 self._json({"error": "not found"}, code=404)
         except Exception as e:

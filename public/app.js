@@ -447,6 +447,50 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+/* ─── FishBench-1 model arena ───────────────────────────── */
+async function showArena() {
+  const el = $("arena");
+  el.hidden = !el.hidden;
+  if (el.hidden) return;
+  try {
+    const [ar, sp] = await Promise.all([
+      api("/api/fishbench/arena"), api("/api/fishbench/spec"),
+    ]);
+    const rows = ar.entries.map((e, i) => {
+      const badge = e.verified === "verified"
+        ? `<span class="v-ok" title="seal + transcript re-score passed">✓</span>`
+        : `<span class="v-bad" title="failed: ${(e.checks_failed || []).join(", ") || "no valid evidence"}">⚠</span>`;
+      const sir = e.fastest_sir_look_s == null ? "—" : `${e.fastest_sir_look_s}s`;
+      const org = e.org ? `<span class="org">${esc(e.org)}</span>` : "";
+      const hash = e.card_sha256 ? `<code title="sealed card sha256">${esc(String(e.card_sha256).slice(0, 10))}…</code>` : "";
+      const when = e.received ? new Date(e.received * 1000).toISOString().slice(0, 10) : "";
+      return `<tr><td>#${i + 1}</td>` +
+        `<td>${badge} <b>${esc(e.display_name)}</b> ${org}<br/><small>${esc(e.model)} · ${esc(e.backend || "")} ${esc(e.base_url_host || "")} · ${esc(e.harness || "")} · ${when}</small></td>` +
+        `<td class="fs">${e.fishscore}</td>` +
+        `<td>${e.breaks}/${e.attacks_total ?? "?"}</td>` +
+        `<td>${e.straight_face_seconds}s</td><td>${sir}</td><td>${e.best_threat_score}</td>` +
+        `<td>${hash}</td></tr>`;
+    }).join("");
+    const s = ar.stages.join("/");
+    const submitLine = `python -m fishbench.bench --model YOUR_MODEL --base-url YOUR_ENDPOINT ` +
+      `--api-key-env KEY_VAR_NAME --name "Display Name" --org "Lab" --submit ${location.origin}`;
+    el.innerHTML =
+      `<h3 class="arena-title">FISHBENCH-${esc(String(ar.spec).split("-")[1] || "1")} · MODEL ARENA</h3>` +
+      `<p class="arena-meta">spec frozen ${esc(ar.spec_date)} · ${s} stages × 10 attacks = 60 probes · ` +
+      `temperature ${ar.temperature} · pace ${ar.pace_s}s · pack <code>${esc(String(ar.attack_pack_sha256).slice(0, 10))}…</code> · ` +
+      `scoring <code>${esc(String(ar.scoring_sha256).slice(0, 10))}…</code> · ` +
+      `<a href="/api/fishbench/spec" target="_blank" rel="noopener">full spec</a></p>` +
+      (rows
+        ? `<table class="arena-table"><tr><th></th><th>model</th><th>fishscore</th><th>breaks</th><th>face</th><th>sir</th><th>threat</th><th>card</th></tr>${rows}</table>`
+        : `<p class="arena-empty">no submissions yet — the baseline (Offline Denise) hasn't even seeded. suspicious.</p>`) +
+      `<details class="arena-submit"><summary>submit a model (bring your own endpoint — key stays in your env)</summary>` +
+      `<pre>${esc(submitLine)}</pre>` +
+      `<p class="arena-note">runs all 60 probes headless, seals the card locally (sha256), POSTs it here. ` +
+      `the arena re-scores every transcript and badges what it could verify — ✓ verified, ⚠ claims only.</p></details>`;
+  } catch (e) { sys(`arena: ${e.message}`); }
+}
+$("showArena").addEventListener("click", showArena);
+
 /* ─── modal ─────────────────────────────────────────────── */
 function openModal() { $("modal").hidden = false; }
 $("modalX").addEventListener("click", () => { $("modal").hidden = true; });

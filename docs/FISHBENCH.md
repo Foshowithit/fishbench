@@ -67,9 +67,26 @@ Entries record `name, model, run_number, score, straight_face_seconds,
 character_breaks`. Submit with `POST /api/fishbench/leaderboard`; ranking via
 `GET /api/fishbench/leaderboard?category=<cat>`.
 
-## Anti-cheat (v0.1 stance)
+## Anti-cheat (FishBench-1)
 
-Not built yet, deliberately: this is a comedy benchmark. Planned when a
-hosted leaderboard exists — server-side transcript verification (the run must
-produce a transcript consistent with the score), rate-limiting, and model
-attestation. Until then, the leaderboard is for glory, not grad school.
+Built. Full methodology in [SPEC.md](SPEC.md) — the short version:
+
+- **Frozen spec**: `fishbench/spec.py` pins spec ID `fishbench-1`
+  (2026-09-28): stages 1/5/20/50/100/200, 5.0s virtual pace, temperature
+  0.7, attack pack a01–a10, every scoring constant. Any change ⇒
+  `fishbench-2`, new board.
+- **Official submissions** are sealed result cards from the headless
+  runner — 6 stages × 10 attacks = 60 probes against your own endpoint:
+  `python -m fishbench.bench --model ID --base-url URL --api-key-env
+  KEY_VAR --submit http://arena:8383`. The card is one JSON artifact
+  sealed with a sha256 over its canonical form; API keys are read only
+  from the env var you name, never argv.
+- **Verification**: the arena refuses foreign-spec cards at the digest
+  gate, recomputes the seal, and re-scores every stage transcript from
+  scratch — claimed numbers must fall out of the card's own transcript.
+  ✓ verified / ⚠ unverified badge per row; ranking is on claimed
+  FishScore with the badge shown (SWE-bench style). What verification
+  does and doesn't prove is spelled out in SPEC.md §5.
+- **The model leaderboard** (`MODEL ARENA` button, `GET/POST
+  /api/fishbench/arena`) keeps the best card per model; offline Denise is
+  seeded as the 640.0/1000 baseline on every fresh arena.

@@ -20,6 +20,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
+from . import spec  # the frozen fishbench-1 constants — never restate them
+
 # Words Denise plausibly says when she's had it with you.
 _THREAT_WORDS = {
     "manager", "call", "police", "911", "ban", "membership", "cancelled",
@@ -123,12 +125,13 @@ class FishBenchScorer:
 
     Scoring philosophy: points reward the model *staying Denise* under
     pressure. Breaking character is heavily punished. Long stretches with no
-    break are the headline metric.
+    break are the headline metric. Every constant here is the frozen
+    fishbench-1 spec (`spec.py`) — the same numbers the spec hash covers.
     """
 
-    BREAK_PENALTY = 50
-    TURN_POINTS = 5
-    SCAN_POINTS = 10
+    BREAK_PENALTY = spec.BREAK_PENALTY
+    TURN_POINTS = spec.TURN_POINTS
+    SCAN_POINTS = spec.SCAN_POINTS
 
     def __init__(self, run_id: str, run_number: int):
         self.run_id = run_id
@@ -182,22 +185,25 @@ class FishBenchScorer:
                 result.best_threat_score = s
                 result.best_threat = t.text
 
-        # Category scores (each 0..100 before weighting).
+        # Category scores (each 0..spec.CATEGORY_CAP before weighting).
         categories = {
-            "longest_straight_face": min(100.0, result.straight_face_seconds * 2.0),
-            "fastest_sir_look": 0.0 if result.first_sir_look_s is None
-                                else max(0.0, 100.0 - result.first_sir_look_s * 5.0),
-            "most_creative_threat": min(100.0, result.best_threat_score * 20.0),
-            "least_breaking": max(0.0, 100.0 - result.character_breaks * 40.0),
+            "longest_straight_face":
+                min(spec.CATEGORY_CAP,
+                    result.straight_face_seconds * spec.FACE_POINTS_PER_S),
+            "fastest_sir_look":
+                0.0 if result.first_sir_look_s is None
+                else max(0.0, spec.CATEGORY_CAP
+                         - result.first_sir_look_s * spec.SIR_LOOK_COST_PER_S),
+            "most_creative_threat":
+                min(spec.CATEGORY_CAP,
+                    result.best_threat_score * spec.THREAT_POINTS_PER_HIT),
+            "least_breaking":
+                max(0.0, spec.CATEGORY_CAP
+                    - result.character_breaks * spec.BREAK_CATEGORY_COST),
         }
         result.category_scores = categories
 
-        weighted = (
-            0.40 * categories["longest_straight_face"]
-            + 0.20 * categories["fastest_sir_look"]
-            + 0.20 * categories["most_creative_threat"]
-            + 0.20 * categories["least_breaking"]
-        )
+        weighted = spec.weighted_composite(categories)
         raw = weighted * 10  # 0..1000 headline number
         raw += result.turns * self.TURN_POINTS
         raw += result.scans * self.SCAN_POINTS

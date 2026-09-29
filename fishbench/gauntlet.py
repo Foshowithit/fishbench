@@ -148,6 +148,9 @@ class GauntletResult:
     attacks: list[AttackResult]
     score: RunScore
     review: Optional[ReviewReport] = None
+    # The run-start greeting is a scored turn at t=0 (same as a played run),
+    # so a submission's transcript needs it for re-score parity.
+    greeting: str = ""
 
     @property
     def passes(self) -> bool:
@@ -255,7 +258,7 @@ def run_gauntlet(
             backend=rec.backend_name,
             model=cfg.model if cfg.backend == "http" else "offline",
             run_number=run_number, stage=stage, pace_s=pace_s,
-            attacks=results, score=score, review=review,
+            attacks=results, score=score, review=review, greeting=greeting,
         )
     finally:
         tmp.cleanup()
